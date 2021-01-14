@@ -1,0 +1,608 @@
+#if 0
+#include<stdio.h>
+#include<stdlib.h>
+#include<string.h>
+#endif
+
+#include"siska_mm.h"
+#include"siska_task.h"
+
+#define SISKA_KERNEL_SIZE (128 * 1024)
+
+#define SISKA_MM_EXT_PTR  0x90002
+#define SISKA_MM_EXT_KB   (*(volatile unsigned short*)SISKA_MM_EXT_PTR)
+//#define SISKA_MM_EXT_KB   (4 * 4)
+#define SISKA_MM_EXT_MAX_KB (15 * 1024)
+
+siska_page_t  siska_base_pages[(0xa0000 - SISKA_KERNEL_SIZE) >> PG_SHIFT];
+
+siska_page_t* siska_ext_pages   = (siska_page_t*)(1UL << 20);
+unsigned long siska_total_pages = 0;
+
+#define BLOCK_SHIFT_MIN    5
+static siska_block_head_t  siska_block_heads[PG_SHIFT];
+
+static unsigned long base = 0;
+
+static inline int siska_block_is_used(siska_block_t* b)
+{
+	return b->size_used & 0x1;
+}
+
+static inline void siska_block_set_used(siska_block_t* b)
+{
+	b->size_used |= 0x1;
+}
+
+static inline long siska_block_get_shift(long size)
+{
+	long n;
+	asm volatile(
+		"bsr %1, %0"
+		:"=r"(n)
+		:"r"(size)
+		:
+	);
+
+	return n;
+}
+
+static inline siska_block_t* siska_block_head(void* p)
+{
+	return (siska_block_t*)((unsigned long)p - sizeof(long));
+}
+
+static inline void* siska_block_data(siska_block_t* b)
+{
+	return (void*)((unsigned long)b + sizeof(long));
+}
+
+static inline long siska_block_size(siska_block_t* b)
+{
+	long used = b->size_used & 0x1;
+	return used ? b->size_used & ~0x1 : b->size_free;
+}
+
+static inline long siska_block_data_size(siska_block_t* b)
+{
+	long used = b->size_used & 0x1;
+	return used ? (b->size_used & ~0x1) - sizeof(long) : 0;
+}
+
+static inline long siska_block_need_shift(long size)
+{
+	size += sizeof(long);
+	long n;
+	asm volatile(
+		"bsr %1, %0"
+		:"=r"(n)
+		:"r"(size)
+		:
+	);
+
+	n += !!(size & ~(1u << n));
+	return n;
+}
+
+void siska_mm_init()
+{
+	siska_block_head_t* bh;
+
+	unsigned long used_pages;
+	unsigned long i;
+	unsigned long mm_ext_KB = SISKA_MM_EXT_KB;
+
+	if (mm_ext_KB > SISKA_MM_EXT_MAX_KB)
+		mm_ext_KB = SISKA_MM_EXT_MAX_KB;
+
+	siska_total_pages = mm_ext_KB >> (PG_SHIFT - 10);
+
+	used_pages = (siska_total_pages * sizeof(siska_page_t) + PG_SIZE - 1) >> PG_SHIFT;
+
+	for (i = 0; i < siska_total_pages; i++) {
+
+		siska_spinlock_init(&(siska_ext_pages[i].lock));
+
+		if (i < used_pages)
+			siska_ext_pages[i].refs = 1;
+		else
+			siska_ext_pages[i].refs = 0;
+	}
+
+	for (i = 0; i < PG_SHIFT; i++) {
+		bh = &siska_block_heads[i];
+
+		siska_list_init(&bh->head);
+		siska_spinlock_init(&bh->lock);
+	}
+}
+
+unsigned long siska_page_addr(siska_page_t* page)
+{
+	unsigned long index = (unsigned long)(page - siska_ext_pages);
+	unsigned long addr  = (index << PG_SHIFT)  + (1u << 20);
+	return addr;
+}
+
+siska_page_t* siska_addr_page(unsigned long addr)
+{
+	return siska_ext_pages + ((addr - (1u << 20)) >> PG_SHIFT);
+}
+
+int siska_get_free_pages(siska_page_t** pages, int nb_pages)
+{
+	siska_page_t* pg;
+	siska_page_t* pg2;
+	int i;
+	int j;
+
+	for (i = 0; i + nb_pages < siska_total_pages; i += nb_pages) {
+
+		pg = siska_ext_pages + i;
+
+		unsigned long flags;
+		siska_irqsave(flags);
+
+		for (j = 0; j < nb_pages; j++) {
+			pg2 = pg + j;
+
+			siska_spin_lock(&pg2->lock);
+			if (pg2->refs > 0) {
+				siska_spin_unlock(&pg2->lock);
+				break;
+			}
+
+			pg2->refs++;
+		}
+
+		if (j < nb_pages) {
+			for (--j; j >= 0; j--) {
+				pg2 = pg + j;
+				pg2->refs--;
+				siska_spin_unlock(&pg2->lock);
+			}
+			siska_irqrestore(flags);
+
+		} else {
+			for (--j; j >= 0; j--) {
+				pg2 = pg + j;
+				siska_spin_unlock(&pg2->lock);
+			}
+			siska_irqrestore(flags);
+
+			*pages = pg;
+			return nb_pages;
+		}
+	}
+
+	return -1;
+}
+
+int siska_free_pages(siska_page_t* pages, int nb_pages)
+{
+	siska_page_t* pg;
+	int i;
+
+	for (i = 0; i < nb_pages; i++) {
+		pg = pages + i;
+
+		unsigned long flags;
+		siska_spin_lock_irqsave(&pg->lock, flags);
+		pg->refs--;
+		siska_spin_unlock_irqrestore(&pg->lock, flags);
+	}
+	return 0;
+}
+
+void* siska_kmalloc(int size)
+{
+	if (size + sizeof(long) > (PG_SIZE >> 1))
+		return NULL;
+
+	siska_block_head_t* bh;
+	siska_block_t* b;
+	siska_block_t* b2;
+	siska_list_t*  l;
+
+	long shift;
+	long i;
+
+	shift = siska_block_need_shift(size);
+
+	shift = shift < BLOCK_SHIFT_MIN ? BLOCK_SHIFT_MIN : shift;
+
+	bh = &siska_block_heads[shift];
+
+	unsigned long flags;
+	siska_spin_lock_irqsave(&bh->lock, flags);
+	if (!siska_list_empty(&bh->head)) {
+
+		l = siska_list_head(&bh->head);
+		b = siska_list_data(l, siska_block_t, list);
+
+		siska_list_del(&b->list);
+		siska_spin_unlock_irqrestore(&bh->lock, flags);
+
+		b->size_used = 1u << shift;
+		siska_block_set_used(b);
+
+		return siska_block_data(b);
+	}
+	siska_spin_unlock_irqrestore(&bh->lock, flags);
+
+	for (i = shift + 1; i < PG_SHIFT; i++) {
+		bh = &siska_block_heads[i];
+
+		siska_spin_lock_irqsave(&bh->lock, flags);
+		if (siska_list_empty(&bh->head)) {
+			siska_spin_unlock_irqrestore(&bh->lock, flags);
+			continue;
+		}
+
+		l = siska_list_head(&bh->head);
+		b = siska_list_data(l, siska_block_t, list);
+
+		siska_list_del(&b->list);
+		siska_spin_unlock_irqrestore(&bh->lock, flags);
+
+		long j;
+		for (j = i - 1; j >= shift; j--) {
+			bh = &siska_block_heads[j];
+
+			b2 = (siska_block_t*)((unsigned long)b + (1u << j));
+			b->size_free = 1u << j;
+
+			siska_spin_lock_irqsave(&bh->lock, flags);
+			siska_list_add_front(&bh->head, &b->list);
+			siska_spin_unlock_irqrestore(&bh->lock, flags);
+			b = b2;
+		}
+
+		b->size_used = 1u << shift;
+		siska_block_set_used(b);
+
+		return siska_block_data(b);
+	}
+
+	siska_page_t* pg = NULL;
+	if (siska_get_free_pages(&pg, 1) < 0)
+		return NULL;
+
+	b = (siska_block_t*) siska_page_addr(pg);
+
+//	printf("%s(), %d, b: %p, size: %ld, shift: %ld, pg: %p\n", __func__, __LINE__, b, size, shift, pg);
+
+	for (i = PG_SHIFT - 1; i >= shift; i--) {
+		bh = &siska_block_heads[i];
+
+		b2 = (siska_block_t*)((unsigned long)b + (1u << i));
+
+//	printf("%s(), %d, b2: %p, size: %ld, shift: %ld\n", __func__, __LINE__, b2, 1u << i, i);
+		b->size_free = 1u << i;
+
+		siska_spin_lock_irqsave(&bh->lock, flags);
+		siska_list_add_front(&bh->head, &b->list);
+		siska_spin_unlock_irqrestore(&bh->lock, flags);
+		b = b2;
+	}
+
+	b->size_used = 1u << shift;
+	siska_block_set_used(b);
+
+	return siska_block_data(b);
+}
+
+void siska_memset(void* dst, unsigned long data, unsigned long size)
+{
+	asm volatile(
+		"movl %0, %%ecx\n\t"
+		"movl %2, %%edi\n\t"
+		"movl %3, %%eax\n\t"
+		"cld\n\t"
+		"rep  stosl\n\t"
+		"movl %1, %%ecx\n\t"
+		"rep  stosb\n\t"
+		:
+		:"r"(size >> 2), "r"(size & 0x3), "r"(dst), "r"(data)
+		:"ecx", "edi", "eax"
+	);
+}
+
+void siska_memcpy(void* dst, void* src, unsigned long size)
+{
+	asm volatile(
+		"movl %0, %%ecx\n\t"
+		"movl %2, %%edi\n\t"
+		"movl %3, %%esi\n\t"
+		"cld\n\t"
+		"rep  movsl\n\t"
+		"movl %1, %%ecx\n\t"
+		"rep  movsb\n\t"
+		:
+		:"r"(size >> 2), "r"(size & 0x3), "r"(dst), "r"(src)
+		:"ecx", "edi", "esi"
+	);
+}
+
+void* siska_krealloc(void* p, int size)
+{
+	if (size <= 0) {
+		siska_kfree(p);
+		return NULL;
+	}
+
+	if (size + sizeof(long) > (PG_SIZE >> 1))
+		return NULL;
+
+	siska_block_t* b  = siska_block_head(p);
+//	printf("b: %p\n", b);
+	long old_datasize = siska_block_data_size(b);
+
+	if (old_datasize < size) {
+		void* p2 = siska_kmalloc(size);
+		if (!p2)
+			return NULL;
+
+		siska_memcpy(p2, p, size);
+		siska_kfree(p);
+		return p2;
+
+	} else if (old_datasize == size)
+		return p;
+
+	long old_size  = siska_block_size(b);
+	long old_shift = siska_block_get_shift(old_size);
+	long new_shift = siska_block_need_shift(size);
+
+//	printf("%s(), %d, b: %p, size: %ld, shift: %ld\n", __func__, __LINE__, b, size, old_shift);
+
+	long i;
+	for (i = old_shift - 1; i >= new_shift; i--) {
+
+		siska_block_head_t* bh;
+		siska_block_t* b2;
+
+		bh = &siska_block_heads[i];
+
+		b2 = (siska_block_t*)((unsigned long)b + (1u << i));
+		b2->size_free = 1u << i;
+
+//		printf("%s(), %d, b2: %p, shift i: %ld\n", __func__, __LINE__, b, i);
+
+		unsigned long flags;
+		siska_spin_lock_irqsave(&bh->lock, flags);
+		siska_list_add_front(&bh->head, &b2->list);
+		siska_spin_unlock_irqrestore(&bh->lock, flags);
+	}
+
+	b->size_used = 1u << new_shift;
+	siska_block_set_used(b);
+	return p;
+}
+
+void siska_kfree(void* p)
+{
+	if (!p)
+		return;
+
+	siska_block_head_t* bh;
+	siska_block_t* b;
+	siska_block_t* b2;
+
+	b = siska_block_head(p);
+
+	long size  = siska_block_size(b);
+	long shift = siska_block_get_shift(size);
+
+	b->size_free = size;
+//	printf("%s(), %d, b: %p, size: %ld, shift: %ld\n", __func__, __LINE__, b, size, shift);
+
+	long i;
+	for (i = shift; i < PG_SHIFT; i++) {
+
+		bh = &siska_block_heads[i];
+
+//	printf("%s(), %d, b: %p, size: %ld, shift i: %ld\n", __func__, __LINE__, b, size, i);
+
+		if (!((unsigned long)b & ((size << 1) - 1))) {
+
+			b2 = (siska_block_t*)((unsigned long)b + size);
+
+			unsigned long flags;
+			siska_spin_lock_irqsave(&bh->lock, flags);
+			if (siska_block_is_used(b2)) {
+
+				siska_list_add_front(&bh->head, &b->list);
+				siska_spin_unlock_irqrestore(&bh->lock, flags);
+				return;
+			}
+			siska_list_del(&b2->list);
+			siska_spin_unlock_irqrestore(&bh->lock, flags);
+
+			if (b2->size_free != size) {
+				while (1);
+			}
+
+			size <<= 1;
+			b->size_free = size;
+			continue;
+		}
+
+		b2 = (siska_block_t*)((unsigned long)b - size);
+//	printf("%s(), %d, b2: %p, b: %p, size: %ld, i: %ld\n", __func__, __LINE__, b2, b, size, i);
+
+		unsigned long flags;
+		siska_spin_lock_irqsave(&bh->lock, flags);
+		if (siska_block_is_used(b2)) {
+
+			siska_list_add_front(&bh->head, &b->list);
+			siska_spin_unlock_irqrestore(&bh->lock, flags);
+			return;
+		}
+		siska_list_del(&b2->list);
+		siska_spin_unlock_irqrestore(&bh->lock, flags);
+
+		b = b2;
+		size <<= 1;
+		b->size_free = size;
+	}
+//	printf("%s(), %d, b: %p, size: %ld, shift i: %ld\n", __func__, __LINE__, b, size, i);
+
+	if (b->size_free != PG_SIZE) {
+		while (1);
+	}
+
+	siska_page_t* pg = siska_addr_page((unsigned long)b);
+
+//	printf("%s(), %d, b: %p, size: %ld, pg: %p\n", __func__, __LINE__, b, size, pg);
+
+	siska_free_pages(pg, 1);
+}
+
+void _do_page_fault(unsigned long vaddr, unsigned long error_code, unsigned long CPL)
+{
+	unsigned long* pg_dir;
+	unsigned long* pg_table;
+	unsigned long  paddr;
+	unsigned long  paddr2;
+	siska_page_t*  pg  = NULL;
+	siska_page_t*  pg2 = NULL;
+
+	pg_dir = (unsigned long*) current->cr3;
+
+	if (!(pg_dir[vaddr >> 22] & PG_FLAG_PRESENT)) {
+
+		if (siska_get_free_pages(&pg, 1) < 0)
+			return;
+
+		paddr    = siska_page_addr(pg);
+
+		pg_table = (unsigned long*)paddr;
+
+		pg_dir[vaddr >> 22] = paddr | 0x7;
+
+		siska_memset(pg_table, 0, PG_SIZE);
+	} else {
+		paddr = pg_dir[vaddr >> 22] & ~(PG_SIZE - 1);
+
+		pg    = siska_addr_page(paddr);
+
+		unsigned long flags;
+		siska_spin_lock_irqsave(&pg->lock, flags);
+		if (pg->refs > 1) {
+			siska_spin_unlock_irqrestore(&pg->lock, flags);
+
+			if (siska_get_free_pages(&pg2, 1) < 0)
+				return;
+
+			paddr2 = siska_page_addr(pg2);
+			siska_memcpy((void*)paddr2, (void*)paddr, PG_SIZE);
+
+			pg_dir[vaddr >> 22] = paddr2 | 0x7;
+
+			siska_spin_lock_irqsave(&pg->lock, flags);
+			pg->refs--;
+			siska_spin_unlock_irqrestore(&pg->lock, flags);
+
+			pg_table = (unsigned long*)paddr2;
+		} else {
+			siska_spin_unlock_irqrestore(&pg->lock, flags);
+
+			pg_dir[vaddr >> 22] = paddr2 | 0x7;
+
+			pg_table = (unsigned long*)paddr;
+
+			int i;
+			for (i = 0; i < 1024; i++)
+				pg_table[i] &= ~PG_FLAG_WRITE;
+		}
+	}
+
+	if (!(error_code & PG_FLAG_PRESENT)) {
+		// page not exist
+
+		if (siska_get_free_pages(&pg, 1) < 0)
+			return;
+
+		paddr = siska_page_addr(pg);
+
+		pg_table[(vaddr >> 12) & 0x3ff] = paddr | 0x7;
+
+	} else if (error_code & PG_FLAG_WRITE) {
+		// page can't write, read only
+
+		paddr = pg_table[(vaddr >> 12) & 0x3ff] & ~(PG_SIZE - 1);
+
+		pg    = siska_addr_page(paddr);
+
+		unsigned long flags;
+		siska_spin_lock_irqsave(&pg->lock, flags);
+		if (pg->refs > 1) {
+			siska_spin_unlock_irqrestore(&pg->lock, flags);
+
+			if (siska_get_free_pages(&pg2, 1) < 0)
+				return;
+
+			paddr2 = siska_page_addr(pg2);
+			siska_memcpy((void*)paddr2, (void*)paddr, PG_SIZE);
+
+			pg_table[(vaddr >> 12) & 0x3ff] = paddr2 | 0x7;
+
+			siska_spin_lock_irqsave(&pg->lock, flags);
+			pg->refs--;
+			siska_spin_unlock_irqrestore(&pg->lock, flags);
+		} else {
+			siska_spin_unlock_irqrestore(&pg->lock, flags);
+
+			pg_table[(vaddr >> 12) & 0x3ff] = paddr | 0x7;
+		}
+	}
+}
+
+#if 0
+int main()
+{
+	siska_mm_init();
+
+	void* p0 = siska_kmalloc(5);
+	void* p1 = siska_kmalloc(17);
+
+	printf("p0: %p\n", p0);
+	printf("p1: %p\n", p1);
+
+	void* p2 = siska_kmalloc(37);
+	void* p3 = siska_kmalloc(43);
+
+	printf("p2: %p\n", p2);
+	printf("p3: %p\n", p3);
+
+	char* str = "hello world!";
+	int len = strlen(str);
+	siska_memcpy(p2, str, len + 1);
+	siska_memcpy(p3, str, len + 1);
+
+	void* p4 = siska_krealloc(p3, 47);
+	void* p5 = siska_krealloc(p2, 23);
+
+	printf("p4: %p, %s\n", p4, p4);
+	printf("p5: %p, %s\n", p5, p5);
+	printf("\n");
+
+	printf("p0: %p\n", p0);
+	siska_kfree(p0);
+	printf("\n");
+
+	printf("p1: %p\n", p1);
+	siska_kfree(p1);
+	printf("\n");
+
+	printf("p4: %p\n", p4);
+	siska_kfree(p4);
+	printf("\n");
+
+	printf("p5: %p\n", p5);
+	siska_kfree(p5);
+
+	return 0;
+}
+#endif
