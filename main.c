@@ -1,28 +1,15 @@
 
 #include"siska_task.h"
 #include"siska_mm.h"
+#include"siska_api.h"
 
-volatile unsigned long _jiffies;
+void siska_console_init();
 
-int _printk(const char* fmt)
+int siska_write(siska_regs_t* regs)
 {
-	unsigned char* p = (unsigned char*)0xb8000;
+	const char* fmt = (const char*)regs->ebx;
 
-	unsigned long flags;
-	siska_irqsave(flags);
-	while (*fmt) {
-		*p++ = *fmt++;
-		*p++ = 0x7f;
-	}
-	siska_irqrestore(flags);
-
-	return 0;
-}
-
-int siska_write(unsigned long esp, const char* fmt)
-{
-	_printk(fmt);
-	return 0;
+	return siska_console_write(fmt);
 }
 
 int _do_timer()
@@ -33,34 +20,29 @@ int _do_timer()
 
 int _do_syscall_default()
 {
-	_printk("syscall default!\n");
+	siska_printk("syscall default!\n");
 	return 0;
 }
 
 void _syscall_init()
 {
 	int i;
-	for (i = 0; i < 8; i++)
+	for (i = 0; i < 256; i++)
 		set_syscall_handler(i, _do_syscall_default);
 
-	set_syscall_handler(SISKA_SYSCALL_FORK,  siska_fork);
-	set_syscall_handler(SISKA_SYSCALL_SCHED, siska_schedule);
-	set_syscall_handler(SISKA_SYSCALL_WRITE, siska_write);
-}
+	set_syscall_handler(SISKA_SYSCALL_FORK,    siska_fork);
+	set_syscall_handler(SISKA_SYSCALL_SCHED,   siska_schedule);
 
-int _write(const char* fmt)
-{
-	int ret;
-	asm volatile(
-		"movl $3, %%eax\n\t"
-		"movl %1, %%ebx\n\t"
-		"int $0x80\n\t"
-		"movl %%eax, %0\n\t"
-		:"=r"(ret)
-		:"r"(fmt)
-		:"eax", "ebx"
-	);
-	return ret;
+	set_syscall_handler(SISKA_SYSCALL_WRITE,   siska_write);
+
+	set_syscall_handler(SISKA_SYSCALL_KILL,    siska_kill);
+	set_syscall_handler(SISKA_SYSCALL_SIGNAL,  siska_signal);
+
+	set_syscall_handler(SISKA_SYSCALL_EXIT,    siska_exit);
+	set_syscall_handler(SISKA_SYSCALL_WAIT,    siska_wait);
+
+	set_syscall_handler(SISKA_SYSCALL_GETPID,  siska_getpid);
+	set_syscall_handler(SISKA_SYSCALL_GETPPID, siska_getppid);
 }
 
 int _main()
@@ -68,7 +50,6 @@ int _main()
 	siska_tss_t*  tss0  = get_asm_addr(_tss0);
 	siska_task_t* task0 = get_asm_addr(_task0);
 
-//	set_trap_handler(SISKA_INTERRUPT_PAGE_FAULT, _page_fault_int_handler);
 	set_intr_handler(SISKA_INTERRUPT_PAGE_FAULT, _page_fault_int_handler);
 
 	_jiffies = 0;
@@ -89,6 +70,8 @@ int _main()
 	siska_task_init();
 	siska_mm_init();
 
+	siska_console_init();
+
 	tss0->esp0 = (unsigned long)task0 + PG_SIZE;
 	tss0->ss0  = 0x10;
 	tss0->cs   = 0xf;
@@ -103,6 +86,8 @@ int _main()
 	task0->ppid = -1;
 	task0->cr3  =  0;
 	task0->esp3 = (unsigned long)task0 + PG_SIZE;
+	task0->signal_flags = 0;
+	siska_memset(task0->signal_handlers, (unsigned long)SISKA_SIG_DFL, SISKA_NB_SIGNALS * sizeof(void*));
 
 	asm volatile(
 		"pushfl\n\t"
@@ -137,22 +122,24 @@ int _main()
 		:"eax"
 	);
 #if 1
-	int cpid = siska_syscall(SISKA_SYSCALL_FORK, 0, 0, 0);
+	int cpid = siska_api_syscall(SISKA_SYSCALL_FORK, 0, 0, 0);
 	if (-1 == cpid) {
 		while (1) {
 		}
 	} else if (0 == cpid) {
 		while (1) {
-			_write(get_asm_addr(_fork1_msg));
 
-			volatile unsigned long* p = (volatile unsigned long*)(1u << 30);
-			*p = 0x1234;
-//			siska_syscall(SISKA_SYSCALL_SCHED, 0, 0, 0);
+//			siska_api_syscall(SISKA_SYSCALL_KILL, 0, SISKA_SIGINT, 0);
+//			siska_api_printf(get_asm_addr(_fork1_msg));
+//			volatile unsigned long* p = (volatile unsigned long*)(1u << 30);
+//			*p = 0x1234;
+//			siska_api_syscall(SISKA_SYSCALL_SCHED, 0, 0, 0);
 		}
 	} else {
 		while (1) {
-			_write(get_asm_addr(_fork0_msg));
-//			siska_syscall(SISKA_SYSCALL_SCHED, 0, 0, 0);
+//			siska_api_printf(get_asm_addr(_fork0_msg));
+
+			siska_api_syscall(SISKA_SYSCALL_KILL, 1, SISKA_SIGINT, 0);
 		}
 	}
 #endif

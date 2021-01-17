@@ -2,7 +2,7 @@
 .code32
 .text
 .global _start, _task0, _tss0, _idt
-.global _printk, _main
+.global siska_printk, _main
 
 .align 4
 _start:
@@ -154,7 +154,7 @@ _ignore_int_handler:
 	mov   %ax, %fs
 
 	pushl $_init_msg
-	call  _printk
+	call  siska_printk
 	popl  %eax
 
 	pop   %fs

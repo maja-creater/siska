@@ -2,12 +2,17 @@
 .code32
 .text
 .global _timer_int_handler, _syscall_handler, _ret_from_fork, _syscall_table
-.global _jiffies, _do_timer, _printk
+.global _jiffies, _do_timer, siska_printk
 .global _fork0_msg, _fork1_msg
+.global _signal_handler_entry
 
 .align 4
 _timer_msg:
 .asciz "timer interrupt!\n"
+
+.align 4
+_jiffies:
+.long  0
 
 .align 4
 _timer_int_handler:
@@ -46,10 +51,6 @@ _timer_int_handler:
 	movb  $0x20, %al
 	outb  %al, $0x20
 
-#	pushl $_timer_msg
-#	call  _printk
-#	addl  $4, %esp
-
 	movl  36(%esp), %eax
 	testl $0x3, %eax
 	je    1f
@@ -57,8 +58,12 @@ _timer_int_handler:
 	call  _do_timer
 
 1:
-	popl  %eax
 _ret_from_syscall:
+	pushl %esp
+	call siska_do_signal
+	popl  %esp
+
+	popl  %eax
 	popl  %ebx
 	popl  %ecx
 	popl  %edx
@@ -68,6 +73,34 @@ _ret_from_syscall:
 	pop   %es
 	pop   %ds
 	iret
+
+.align 4
+_signal_handler_entry:
+#24 ret
+#20 sig
+#16 handler
+#12 edx
+#8  ecx
+#4  ebx
+#0  eax
+	pushl %edx
+	pushl %ecx
+	pushl %ebx
+	pushl %eax
+
+	movl 16(%esp), %eax
+	movl 20(%esp), %edx
+
+	pushl %edx
+	call *%eax
+	popl  %edx
+
+	popl  %eax
+	popl  %ebx
+	popl  %ecx
+	popl  %edx
+	addl $8, %esp
+	ret
 
 .align 4
 _syscall_msg:
@@ -91,16 +124,18 @@ _syscall_handler:
 	mov   %ax, %fs
 	mov   %ax, %gs
 
-	popl  %eax
+	movl  (%esp), %eax
 	movl  _syscall_table(, %eax, 4), %eax
 
 	pushl %esp
 	call  *%eax
 	popl  %esp
+
+	movl  %eax, (%esp)
 	jmp   _ret_from_syscall
 
 _ret_from_fork:
-	xorl %eax, %eax
+	movl  $0, (%esp)
 	jmp  _ret_from_syscall
 
 .align 4

@@ -4,6 +4,7 @@
 #include"siska_core.h"
 
 typedef struct {
+	unsigned long eax;
 	unsigned long ebx;
 	unsigned long ecx;
 	unsigned long edx;
@@ -74,23 +75,34 @@ struct siska_task_s
 #define SISKA_TASK_ZOMBIE  3
 	int status;
 
-	unsigned long eip;
+	unsigned long   eip;
 
-	unsigned long esp0;
-	unsigned long ss0;
+	unsigned long   esp0;
+	unsigned long   ss0;
 
-	unsigned long esp3;
+	unsigned long   esp3;
 
-	unsigned long cr3;
+	unsigned long   cr3;
 
-	siska_mm_t*   mm;
+	siska_mm_t*     mm;
 
+	unsigned long   signal_flags;
+	void          (*signal_handlers[SISKA_NB_SIGNALS])(int signal);
 };
 
 void siska_task_init();
 
 void siska_schedule();
 int  siska_fork(siska_regs_t* regs);
+
+int  siska_exit(siska_regs_t* regs);
+int  siska_wait(siska_regs_t* regs);
+
+int  siska_kill(siska_regs_t* regs);
+int  siska_signal(siska_regs_t* regs);
+
+int  siska_getpid();
+int  siska_getppid();
 
 #endif
 

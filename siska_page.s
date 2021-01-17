@@ -52,10 +52,6 @@ _page_fault_int_handler:
 	call  _do_page_fault
 	addl  $12, %esp
 
-#	pushl $_page_fault_msg
-#	call  _printk
-#	popl  %edx
-
 	popl  %edx
 	popl  %ecx
 	popl  %ebx

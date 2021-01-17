@@ -1,6 +1,7 @@
 
 #include"siska_task.h"
 #include"siska_mm.h"
+#include"siska_api.h"
 
 #define SISKA_NB_TASKS  16
 
@@ -9,6 +10,8 @@ static siska_task_t*    siska_tasks[SISKA_NB_TASKS];
 static siska_spinlock_t siska_task_lock;
 
 static siska_list_t     siska_task_head;
+
+
 
 void siska_task_init()
 {
@@ -239,13 +242,151 @@ int siska_fork(siska_regs_t* regs)
 	child->esp0 = esp;
 	child->status = SISKA_TASK_RUNNING;
 
+	child->signal_flags = 0;
+	siska_memset(child->signal_handlers, (unsigned long)SISKA_SIG_DFL, SISKA_NB_SIGNALS * sizeof(void*));
+
 	siska_spin_lock_irqsave(&siska_task_lock, flags);
 	siska_list_add_front(&siska_task_head, &child->list);
 	siska_spin_unlock_irqrestore(&siska_task_lock, flags);
 
-	_printk("fork, fork\n");
 	siska_schedule();
 error:
 	return cpid;
+}
+
+int siska_kill(siska_regs_t* regs)
+{
+	int pid    = (int)regs->ebx;
+	int signal = (int)regs->ecx;
+
+	if (pid < 0 || pid >= SISKA_NB_TASKS)
+		return -1;
+
+	if (signal < 0 || signal >= SISKA_NB_SIGNALS)
+		return -1;
+
+	if (0 == signal) {
+		if (siska_tasks[pid])
+			return 0;
+		return -1;
+	}
+
+	if (siska_tasks[pid]) {
+		siska_tasks[pid]->signal_flags |= 1u << signal;
+		return 0;
+	}
+
+	return -1;
+}
+
+int siska_signal(siska_regs_t* regs)
+{
+	int   signal  =   (int)regs->ebx;
+	void* handler = (void*)regs->ecx;
+
+	if (signal < 0 || signal >= SISKA_NB_SIGNALS)
+		return -1;
+
+	current->signal_handlers[signal] = handler;
+	return 0;
+}
+
+void _signal_handler_default(int sig)
+{
+	int pid = siska_api_syscall(SISKA_SYSCALL_GETPID, 0, 0, 0);
+	if (0 != pid)
+		siska_api_printf("pid %d, received signal %d\n", pid, sig);
+//	siska_api_syscall(SISKA_SYSCALL_EXIT, 0, 0, 0);
+}
+
+void _signal_handler_kill(int sig)
+{
+	siska_api_syscall(SISKA_SYSCALL_EXIT, 0, 0, 0);
+}
+
+void __siska_do_signal(siska_regs_t* regs, int sig, void (*handler)(int sig), int count)
+{
+	void* entry = get_asm_addr(_signal_handler_entry);
+
+	if (0 == count) {
+		regs->esp -= sizeof(long);
+
+		*(unsigned long*)regs->esp = regs->eip;
+	}
+
+	*(long* )(regs->esp - 1 * sizeof(long)) = sig;
+	*(void**)(regs->esp - 2 * sizeof(long)) = handler;
+	*(void**)(regs->esp - 3 * sizeof(long)) = entry;
+
+	regs->esp -= 3 * sizeof(long);
+}
+
+int __siska_wait()
+{
+	return 0;
+}
+
+int siska_do_signal(siska_regs_t* regs)
+{
+	int i;
+	int count = 0;
+
+	for (i = 1; i < SISKA_NB_SIGNALS; i++) {
+
+		if (!(current->signal_flags & (1u << i)))
+			continue;
+
+		current->signal_flags &= ~(1u << i);
+
+		void* handler = current->signal_handlers[i];
+
+		if (SISKA_SIGCHLD == i) {
+			__siska_wait();
+			continue;
+		}
+
+		if (SISKA_SIGKILL == i) {
+			__siska_do_signal(regs, SISKA_SIGKILL, _signal_handler_kill, count);
+			count++;
+			break;
+		}
+
+		if (SISKA_SIG_IGN == handler)
+			continue;
+
+		if (SISKA_SIG_DFL == handler)
+			__siska_do_signal(regs, i, _signal_handler_default, count);
+		else
+			__siska_do_signal(regs, i, handler, count);
+		count++;
+	}
+
+	if (count > 0) {
+		regs->esp += sizeof(long);
+		regs->eip  = (unsigned long)get_asm_addr(_signal_handler_entry);
+	}
+
+	return 0;
+}
+
+int siska_exit(siska_regs_t* regs)
+{
+	return 0;
+}
+
+int siska_wait(siska_regs_t* regs)
+{
+	__siska_wait();
+	return 0;
+}
+
+int siska_getpid()
+{
+	return current->pid;
+}
+
+int siska_getppid()
+{
+	return current->ppid;
 }
 

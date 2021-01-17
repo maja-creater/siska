@@ -17,16 +17,25 @@ extern volatile unsigned long _jiffies;
 #define SISKA_INTERRUPT_TIMER      0x20
 #define SISKA_INTERRUPT_SYSCALL    0x80
 
-#define SISKA_SYSCALL_FORK  1
-#define SISKA_SYSCALL_SCHED 2
-#define SISKA_SYSCALL_WRITE 3
-
 #define get_asm_addr(_id) \
 	({ \
 		void* addr; \
 		asm volatile("lea "#_id", %0\n\t" :"=r"(addr)::); \
 		addr; \
 	})
+
+static inline unsigned long get_jiffies()
+{
+	unsigned long jiffies;
+	asm volatile(
+		"lea  _jiffies, %0\n\t"
+		"movl (%0), %0\n\t"
+		:"=r"(jiffies)
+		:
+		:
+	);
+	return jiffies;
+}
 
 static inline siska_task_t* get_current()
 {
@@ -109,25 +118,8 @@ static inline unsigned char inb_p(unsigned short port)
 	return data;
 }
 
-static inline int siska_syscall(unsigned long num, unsigned long arg0, unsigned long arg1, unsigned long arg2)
-{
-	int ret;
-
-	asm volatile(
-		"movl %1, %%eax\n\t"
-		"movl %2, %%ebx\n\t"
-		"movl %3, %%ecx\n\t"
-		"movl %4, %%edx\n\t"
-		"int $0x80\n\t"
-		"movl %%eax, %0\n\t"
-		:"=r"(ret)
-		:"r"(num), "r"(arg0), "r"(arg1), "r"(arg2)
-		:"eax", "ebx", "ecx", "edx"
-	);
-	return ret;
-}
-
-int _printk(const char* fmt);
+int siska_console_write(const char* fmt);
+int siska_printk(const char* fmt, ...);
 
 #endif
 
