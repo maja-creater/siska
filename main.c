@@ -65,12 +65,12 @@ int _main()
 #endif
 	set_trap_handler(SISKA_INTERRUPT_SYSCALL, _syscall_handler);
 
+	siska_console_init();
+
 	_syscall_init();
 
 	siska_task_init();
 	siska_mm_init();
-
-	siska_console_init();
 
 	tss0->esp0 = (unsigned long)task0 + PG_SIZE;
 	tss0->ss0  = 0x10;
@@ -85,7 +85,14 @@ int _main()
 	task0->pid  =  0;
 	task0->ppid = -1;
 	task0->cr3  =  0;
-	task0->esp3 = (unsigned long)task0 + PG_SIZE;
+
+	task0->code3  = (unsigned long)task0 + sizeof(siska_task_t);
+	task0->data3  = (unsigned long)task0 + sizeof(siska_task_t);
+	task0->heap3  = (unsigned long)task0 + sizeof(siska_task_t);
+	task0->brk3   = (unsigned long)task0 + sizeof(siska_task_t);
+	task0->ebp3   = (unsigned long)task0 + PG_SIZE;
+	task0->end3   = (unsigned long)task0 + PG_SIZE;
+
 	task0->signal_flags = 0;
 	siska_memset(task0->signal_handlers, (unsigned long)SISKA_SIG_DFL, SISKA_NB_SIGNALS * sizeof(void*));
 

@@ -69,6 +69,7 @@ struct siska_task_s
 
 	int pid;
 	int ppid;
+	int exit_code;
 
 #define SISKA_TASK_RUNNING 1
 #define SISKA_TASK_SLEEP   2
@@ -80,14 +81,20 @@ struct siska_task_s
 	unsigned long   esp0;
 	unsigned long   ss0;
 
-	unsigned long   esp3;
-
 	unsigned long   cr3;
 
 	siska_mm_t*     mm;
 
 	unsigned long   signal_flags;
 	void          (*signal_handlers[SISKA_NB_SIGNALS])(int signal);
+
+	unsigned long   code3;
+	unsigned long   data3;
+	unsigned long   heap3;
+	unsigned long   brk3;
+
+	unsigned long   ebp3;
+	unsigned long   end3;
 };
 
 void siska_task_init();
@@ -95,7 +102,7 @@ void siska_task_init();
 void siska_schedule();
 int  siska_fork(siska_regs_t* regs);
 
-int  siska_exit(siska_regs_t* regs);
+void siska_exit(siska_regs_t* regs);
 int  siska_wait(siska_regs_t* regs);
 
 int  siska_kill(siska_regs_t* regs);

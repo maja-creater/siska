@@ -14,10 +14,9 @@
 //#define SISKA_MM_EXT_KB   (4 * 4)
 #define SISKA_MM_EXT_MAX_KB (15 * 1024)
 
-siska_page_t  siska_base_pages[(0xa0000 - SISKA_KERNEL_SIZE) >> PG_SHIFT];
-
-siska_page_t* siska_ext_pages   = (siska_page_t*)(1UL << 20);
-unsigned long siska_total_pages = 0;
+siska_page_t* siska_pages        = (siska_page_t*)(1UL << 20);
+unsigned long siska_total_pages  = 0;
+unsigned long siska_used_pages   = 0;
 
 #define BLOCK_SHIFT_MIN    5
 static siska_block_head_t  siska_block_heads[PG_SHIFT];
@@ -88,25 +87,27 @@ void siska_mm_init()
 {
 	siska_block_head_t* bh;
 
-	unsigned long used_pages;
 	unsigned long i;
 	unsigned long mm_ext_KB = SISKA_MM_EXT_KB;
 
 	if (mm_ext_KB > SISKA_MM_EXT_MAX_KB)
 		mm_ext_KB = SISKA_MM_EXT_MAX_KB;
 
-	siska_total_pages = mm_ext_KB >> (PG_SHIFT - 10);
+	siska_total_pages = (1024 + mm_ext_KB) >> (PG_SHIFT - 10);
 
-	used_pages = (siska_total_pages * sizeof(siska_page_t) + PG_SIZE - 1) >> PG_SHIFT;
+	siska_used_pages  = (siska_total_pages * sizeof(siska_page_t) + PG_SIZE - 1) >> PG_SHIFT;
+	siska_used_pages += 1u << 20 >> PG_SHIFT;
+
+//	siska_printk("siska_pages: %p, total_pages: %d, used_pages: %d\n", siska_pages, siska_total_pages, siska_used_pages);
 
 	for (i = 0; i < siska_total_pages; i++) {
 
-		siska_spinlock_init(&(siska_ext_pages[i].lock));
+		siska_spinlock_init(&(siska_pages[i].lock));
 
-		if (i < used_pages)
-			siska_ext_pages[i].refs = 1;
+		if (i < siska_used_pages)
+			siska_pages[i].refs = 1;
 		else
-			siska_ext_pages[i].refs = 0;
+			siska_pages[i].refs = 0;
 	}
 
 	for (i = 0; i < PG_SHIFT; i++) {
@@ -117,18 +118,6 @@ void siska_mm_init()
 	}
 }
 
-unsigned long siska_page_addr(siska_page_t* page)
-{
-	unsigned long index = (unsigned long)(page - siska_ext_pages);
-	unsigned long addr  = (index << PG_SHIFT)  + (1u << 20);
-	return addr;
-}
-
-siska_page_t* siska_addr_page(unsigned long addr)
-{
-	return siska_ext_pages + ((addr - (1u << 20)) >> PG_SHIFT);
-}
-
 int siska_get_free_pages(siska_page_t** pages, int nb_pages)
 {
 	siska_page_t* pg;
@@ -136,9 +125,9 @@ int siska_get_free_pages(siska_page_t** pages, int nb_pages)
 	int i;
 	int j;
 
-	for (i = 0; i + nb_pages < siska_total_pages; i += nb_pages) {
+	for (i = siska_used_pages; i + nb_pages < siska_total_pages; i += nb_pages) {
 
-		pg = siska_ext_pages + i;
+		pg = siska_pages + i;
 
 		unsigned long flags;
 		siska_irqsave(flags);
@@ -500,9 +489,7 @@ void _do_page_fault(unsigned long vaddr, unsigned long error_code, unsigned long
 
 			pg_dir[vaddr >> 22] = paddr2 | 0x7;
 
-			siska_spin_lock_irqsave(&pg->lock, flags);
-			pg->refs--;
-			siska_spin_unlock_irqrestore(&pg->lock, flags);
+			siska_unref_page(pg);
 
 			pg_table = (unsigned long*)paddr2;
 		} else {
@@ -548,15 +535,154 @@ void _do_page_fault(unsigned long vaddr, unsigned long error_code, unsigned long
 
 			pg_table[(vaddr >> 12) & 0x3ff] = paddr2 | 0x7;
 
-			siska_spin_lock_irqsave(&pg->lock, flags);
-			pg->refs--;
-			siska_spin_unlock_irqrestore(&pg->lock, flags);
+			siska_unref_page(pg);
 		} else {
 			siska_spin_unlock_irqrestore(&pg->lock, flags);
 
 			pg_table[(vaddr >> 12) & 0x3ff] = paddr | 0x7;
 		}
 	}
+}
+
+void siska_free_memory(siska_task_t* task)
+{
+	unsigned long* dir = (unsigned long*)task->cr3;
+
+	unsigned long i;
+	unsigned long j;
+	unsigned long paddr;
+	unsigned long vaddr;
+
+	for (i = 0; i < 1024; i++) {
+
+		if (!(dir[i] & PG_FLAG_PRESENT))
+			continue;
+
+		unsigned long* table = (unsigned long*) (dir[i] & ~(PG_SIZE - 1));
+		siska_page_t*  pg;
+
+		for (j = 0; j < 1024; j++) {
+
+			if (!(table[j] & PG_FLAG_PRESENT))
+				continue;
+
+			paddr = table[j] & ~(PG_SIZE - 1);
+			vaddr = (i << 22) | (j << 12);
+
+			if (vaddr >=       task->code3 & ~(PG_SIZE - 1)
+					&& vaddr < task->end3  & ~(PG_SIZE - 1)) {
+				table[j] &= ~PG_FLAG_WRITE;
+
+				pg = siska_addr_page(paddr);
+				siska_free_pages(pg, 1);
+				pg = NULL;
+			}
+		}
+
+		pg = siska_addr_page((unsigned long)table);
+		siska_free_pages(pg, 1);
+		pg = NULL;
+	}
+}
+
+int siska_copy_memory(siska_task_t* child, siska_task_t* parent, unsigned long esp3)
+{
+	unsigned long* child_dir  = (unsigned long*)child->cr3;
+	unsigned long* parent_dir = (unsigned long*)parent->cr3;
+
+	unsigned long i;
+	unsigned long j;
+
+	unsigned long vaddr;
+	unsigned long paddr;
+
+	for (i = 0; i < 1024; i++) {
+
+		child_dir[i] = parent_dir[i];
+
+		if (!(parent_dir[i] & PG_FLAG_PRESENT))
+			continue;
+
+		unsigned long* table = (unsigned long*) (parent_dir[i] & ~(PG_SIZE - 1));
+
+		siska_page_t*  pg    = siska_addr_page((unsigned long)table);
+		siska_ref_page(pg);
+
+		for (j = 0; j < 1024; j++) {
+
+			if (!(table[j] & PG_FLAG_PRESENT))
+				continue;
+
+			paddr = table[j] & ~(PG_SIZE - 1);
+			vaddr = (i << 22) | (j << 12);
+
+			// share user code & data
+			if (vaddr >=        parent->code3 & ~(PG_SIZE - 1)
+					&& vaddr <= parent->brk3  & ~(PG_SIZE - 1)) {
+				table[j] &= ~PG_FLAG_WRITE;
+
+				pg = siska_addr_page(paddr);
+				siska_ref_page(pg);
+			}
+		}
+	}
+
+	for (vaddr = esp3 & ~(PG_SIZE - 1); vaddr < parent->ebp3; vaddr += PG_SIZE) {
+
+		i =  vaddr >> 22;
+		j = (vaddr >> 12) & 0x3ff;
+
+		if (!(parent_dir[i] & PG_FLAG_PRESENT))
+			continue;
+
+		unsigned long* child_table  = (unsigned long*) ( child_dir[i] & ~(PG_SIZE - 1));
+		unsigned long* parent_table = (unsigned long*) (parent_dir[i] & ~(PG_SIZE - 1));
+
+		siska_page_t*  pg  = NULL;
+
+		if (child_table == parent_table) {
+
+			if (siska_get_free_pages(&pg, 1) < 0) {
+				siska_printk("siska_copy_memory, error0\n");
+				goto _error;
+			}
+
+			child_table  = (unsigned long*)siska_page_addr(pg);
+			child_dir[i] = (unsigned long )child_table | 0x7;
+
+			siska_memcpy(child_table, parent_table, PG_SIZE);
+
+			pg = siska_addr_page((unsigned long)parent_table);
+			siska_unref_page(pg);
+			pg = NULL;
+		}
+
+		if (!(parent_table[j] & PG_FLAG_PRESENT))
+			continue;
+
+		if (siska_get_free_pages(&pg, 1) < 0) {
+			siska_printk("siska_copy_memory, error1\n");
+			goto _error;
+		}
+
+		unsigned long child_paddr  = siska_page_addr(pg);
+		unsigned long parent_paddr = parent_table[j] & ~(PG_SIZE - 1);
+
+		child_table[j] = child_paddr | 0x7;
+
+		siska_memcpy((void*)child_paddr, (void*)parent_paddr, PG_SIZE);
+
+		pg = siska_addr_page(parent_paddr);
+		siska_unref_page(pg);
+		pg = NULL;
+
+		parent_table[j] |= PG_FLAG_WRITE;
+	}
+	return 0;
+
+_error:
+	siska_free_memory(child);
+	return -1;
 }
 
 #if 0

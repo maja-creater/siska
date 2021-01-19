@@ -32,7 +32,9 @@ objcopy -S -O binary boot.o  boot.bin
 objcopy -S -O binary init.o  init.bin
 objcopy -S -O binary siska siska.bin
 
-dd if=boot.bin of=../bochs/a.img bs=512 count=1 conv=notrunc
-dd if=init.bin of=../bochs/a.img bs=512 count=1 conv=notrunc seek=1
-dd if=siska.bin of=../bochs/a.img bs=512 conv=notrunc seek=2
+dd if=boot.bin of=~/3rdparty/bochs/a.img bs=512 count=1 conv=notrunc
+dd if=init.bin of=~/3rdparty/bochs/a.img bs=512 count=1 conv=notrunc seek=1
+dd if=siska.bin of=~/3rdparty/bochs/a.img bs=512 conv=notrunc seek=2
+
+rm *.o *.bin siska
 

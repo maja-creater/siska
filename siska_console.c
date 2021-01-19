@@ -35,16 +35,18 @@ int siska_console_write(const char* fmt)
 		}
 
 		if ('\n' == *p) {
+			p++;
 			console_x = 0;
 			console_y++;
-			p++;
+			if (console_y >= console_rows)
+				console_y =  0;
 			continue;
 		}
 
 		int pos = console_y * console_cols + console_x;
 
 		buf[pos * 2]     = *p++;
-		buf[pos * 2 + 1] = 0x7f;
+		buf[pos * 2 + 1] = 0x0f;
 
 		console_x++;
 	}
@@ -53,18 +55,22 @@ int siska_console_write(const char* fmt)
 	return (int)(p - (unsigned char*)fmt);
 }
 
+static char printk_buf[128];
+
 int siska_printk(const char* fmt, ...)
 {
-	char buf[128];
-
 	siska_va_list ap;
+	unsigned long flags;
 
+	siska_irqsave(flags);
 	siska_va_start(ap, fmt);
-	int n = siska_vsnprintf(buf, sizeof(buf), fmt, ap);
+	int n = siska_vsnprintf(printk_buf, sizeof(printk_buf), fmt, ap);
 	siska_va_end(ap);
 
 	if (n > 0)
-		return siska_console_write(buf);
+		n = siska_console_write(printk_buf);
+
+	siska_irqrestore(flags);
 	return n;
 }
 

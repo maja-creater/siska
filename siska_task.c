@@ -30,14 +30,7 @@ void siska_switch_to(siska_task_t* prev, siska_task_t* next)
 {
 	siska_tss_t* tss = get_asm_addr(_tss0);
 
-	asm volatile(
-		"movl %0, %%cr3\n\t"
-		"jmp 1f\n\t"
-		"1:\n\t"
-		:
-		:"r"(0)
-		:
-	);
+	switch_to_pgdir(PGDIR_KERNEL);
 
 	asm volatile(
 		"pushl %%ebp\n\t"
@@ -104,97 +97,6 @@ void siska_schedule()
 	siska_switch_to(current, next);
 }
 
-static void _set_mm_readonly(siska_task_t* task, unsigned long esp3)
-{
-	unsigned long* dir  = (unsigned long*) task->cr3;
-
-	unsigned long i;
-	unsigned long j;
-
-	for (i = 0; i < 1024; i++) {
-		if (!(dir[i] & PG_FLAG_PRESENT))
-			continue;
-
-		// kernel space < 1M
-		if (i > (1u << 20) >> 22 && i < esp3 >> 22) {
-			dir[i] &= ~PG_FLAG_WRITE;
-			continue;
-		}
-
-		unsigned long* table = (unsigned long*)(dir[i] & ~(PG_SIZE - 1));
-
-		for (j = 0; j < 1024; j++) {
-			if (!(table[j] & PG_FLAG_PRESENT))
-				continue;
-
-			unsigned long vaddr = (i << 22) | (j << 12);
-
-			if (esp3 & ~(PG_SIZE - 1) <= vaddr && vaddr < task->esp3)
-				continue;
-
-			if (vaddr >= 1u << 20) {
-				table[i] &= ~PG_FLAG_WRITE;
-				continue;
-			}
-#if 0
-			if (esp3 & ~(PG_SIZE - 1) <= vaddr && vaddr < task->esp3)
-				table[i] &= ~PG_FLAG_WRITE;
-#endif
-		}
-	}
-}
-
-int _copy_memory(siska_task_t* child, siska_task_t* parent, unsigned long esp3)
-{
-	unsigned long* child_dir  = (unsigned long*)child->cr3;
-	unsigned long* parent_dir = (unsigned long*)parent->cr3;
-
-	siska_memcpy(child_dir, parent_dir, PG_SIZE);
-#if 1
-	unsigned long vaddr;
-
-	for (vaddr = esp3 & ~(PG_SIZE - 1); vaddr < parent->esp3; vaddr += PG_SIZE) {
-
-		unsigned long i =  vaddr >> 22;
-		unsigned long j = (vaddr >> 12) & 0x3ff;
-
-		if (!(parent_dir[i] & PG_FLAG_PRESENT))
-			continue;
-
-		unsigned long* child_table  = (unsigned long*) ( child_dir[i] & ~(PG_SIZE - 1));
-		unsigned long* parent_table = (unsigned long*) (parent_dir[i] & ~(PG_SIZE - 1));
-
-		if (child_table == parent_table) {
-			siska_page_t* pg  = NULL;
-
-			if (siska_get_free_pages(&pg, 1) < 0)
-				return -1;
-
-			child_table  = (unsigned long*)siska_page_addr(pg);
-			child_dir[i] = (unsigned long )child_table | 0x7;
-
-			siska_memcpy(child_table, parent_table, PG_SIZE);
-		}
-
-		if (!(parent_table[j] & PG_FLAG_PRESENT))
-			continue;
-
-		siska_page_t* pg2 = NULL;
-		if (siska_get_free_pages(&pg2, 1) < 0)
-			return -1;
-
-		unsigned long child_paddr  = siska_page_addr(pg2);
-		unsigned long parent_paddr = parent_table[j] & ~(PG_SIZE - 1);
-
-		child_table[j] = child_paddr | 0x7;
-
-		siska_memcpy((void*)child_paddr, (void*)parent_paddr, PG_SIZE);
-	}
-#endif
-//	_set_mm_readonly(parent, esp3);
-//	_set_mm_readonly(child,  esp3);
-}
-
 int siska_fork(siska_regs_t* regs)
 {
 	siska_task_t* child;
@@ -206,8 +108,10 @@ int siska_fork(siska_regs_t* regs)
 	int i;
 
 	pg = NULL;
-	if (siska_get_free_pages(&pg, 2) < 0)
+	if (siska_get_free_pages(&pg, 2) < 0) {
+		siska_printk("fork error0!\n");
 		return -1;
+	}
 
 	child = (siska_task_t*) siska_page_addr(pg);
 
@@ -227,6 +131,7 @@ int siska_fork(siska_regs_t* regs)
 	if (-1 == cpid) {
 		siska_free_pages(pg, 2);
 		current->status = SISKA_TASK_RUNNING;
+		siska_printk("fork error1!\n");
 		goto error;
 	}
 
@@ -234,7 +139,12 @@ int siska_fork(siska_regs_t* regs)
 
 	child->cr3  = siska_page_addr(pg + 1);
 
-	_copy_memory(child, current, regs->esp);
+	if (siska_copy_memory(child, current, regs->esp) < 0) {
+		siska_free_pages(pg, 2);
+		current->status = SISKA_TASK_RUNNING;
+		siska_printk("fork error2!\n");
+		goto error;
+	}
 
 	child->pid  = cpid;
 	child->ppid = current->pid;
@@ -249,16 +159,16 @@ int siska_fork(siska_regs_t* regs)
 	siska_list_add_front(&siska_task_head, &child->list);
 	siska_spin_unlock_irqrestore(&siska_task_lock, flags);
 
+	siska_printk("fork ok!\n");
+
 	siska_schedule();
 error:
 	return cpid;
 }
 
-int siska_kill(siska_regs_t* regs)
+int __siska_kill(int pid, int signal)
 {
-	int pid    = (int)regs->ebx;
-	int signal = (int)regs->ecx;
-
+//	siska_printk("kill, pid: %d, signal: %d\n", pid, signal);
 	if (pid < 0 || pid >= SISKA_NB_TASKS)
 		return -1;
 
@@ -271,12 +181,30 @@ int siska_kill(siska_regs_t* regs)
 		return -1;
 	}
 
+	unsigned long flags;
+	siska_spin_lock_irqsave(&siska_task_lock, flags);
 	if (siska_tasks[pid]) {
+
+		switch_to_pgdir(PGDIR_KERNEL);
 		siska_tasks[pid]->signal_flags |= 1u << signal;
+		switch_to_pgdir(current->cr3);
+
+		if (SISKA_SIGCHLD == signal)
+			siska_printk("kill, pid: %d, siska_tasks[%d]: %p, signal: %d\n", pid, pid, siska_tasks[pid], signal);
+		siska_spin_unlock_irqrestore(&siska_task_lock, flags);
 		return 0;
 	}
 
+	siska_spin_unlock_irqrestore(&siska_task_lock, flags);
 	return -1;
+}
+
+int siska_kill(siska_regs_t* regs)
+{
+	int pid    = (int)regs->ebx;
+	int signal = (int)regs->ecx;
+
+	return __siska_kill(pid, signal);
 }
 
 int siska_signal(siska_regs_t* regs)
@@ -296,7 +224,7 @@ void _signal_handler_default(int sig)
 	int pid = siska_api_syscall(SISKA_SYSCALL_GETPID, 0, 0, 0);
 	if (0 != pid)
 		siska_api_printf("pid %d, received signal %d\n", pid, sig);
-//	siska_api_syscall(SISKA_SYSCALL_EXIT, 0, 0, 0);
+	siska_api_syscall(SISKA_SYSCALL_EXIT, 0, 0, 0);
 }
 
 void _signal_handler_kill(int sig)
@@ -323,6 +251,35 @@ void __siska_do_signal(siska_regs_t* regs, int sig, void (*handler)(int sig), in
 
 int __siska_wait()
 {
+	int i;
+	for (i = 1; i < SISKA_NB_TASKS; i++) {
+
+		siska_task_t* task;
+		siska_page_t* pg;
+		unsigned long flags;
+
+		siska_spin_lock_irqsave(&siska_task_lock, flags);
+		task = siska_tasks[i];
+		if (!task || SISKA_TASK_ZOMBIE != task->status) {
+			siska_spin_unlock_irqrestore(&siska_task_lock, flags);
+			continue;
+		}
+
+		siska_tasks[i] = NULL;
+		siska_spin_unlock_irqrestore(&siska_task_lock, flags);
+
+		siska_printk("wait, parent: %d, child: %d, exit_code: %d\n", current->pid, task->pid, task->exit_code);
+
+		pg = siska_addr_page((unsigned long)task);
+		siska_printk("pg, refs: %d\n", pg->refs);
+		siska_printk("pg + 1, refs: %d\n", (pg + 1)->refs);
+		siska_free_pages(pg, 2);
+
+		siska_printk("pg, refs: %d\n", pg->refs);
+		siska_printk("pg + 1, refs: %d\n", (pg + 1)->refs);
+		pg = NULL;
+	}
+
 	return 0;
 }
 
@@ -335,6 +292,9 @@ int siska_do_signal(siska_regs_t* regs)
 
 		if (!(current->signal_flags & (1u << i)))
 			continue;
+
+		if (SISKA_SIGCHLD == i)
+			siska_printk("do signal, pid: %d, signal: %d\n", current->pid, i);
 
 		current->signal_flags &= ~(1u << i);
 
@@ -369,9 +329,25 @@ int siska_do_signal(siska_regs_t* regs)
 	return 0;
 }
 
-int siska_exit(siska_regs_t* regs)
+void siska_exit(siska_regs_t* regs)
 {
-	return 0;
+	if (0 == current->pid)
+		return;
+
+	current->exit_code = (int)regs->ebx;
+	current->status    = SISKA_TASK_ZOMBIE;
+
+	siska_printk("exit, pid: %d, ppid: %d, code: %d\n", current->pid, current->ppid, current->exit_code);
+#if 1
+	unsigned long flags;
+	siska_spin_lock_irqsave(&siska_task_lock, flags);
+	siska_list_del(&current->list);
+	__siska_kill(current->ppid, SISKA_SIGCHLD);
+	siska_spin_unlock_irqrestore(&siska_task_lock, flags);
+
+	siska_free_memory(current);
+	siska_schedule();
+#endif
 }
 
 int siska_wait(siska_regs_t* regs)

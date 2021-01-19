@@ -11,6 +11,8 @@ typedef struct siska_mm_s   siska_mm_t;
 #define PG_SHIFT 12
 #define PG_SIZE  (1u << PG_SHIFT)
 
+#define PGDIR_KERNEL 0
+
 extern volatile unsigned long _jiffies;
 
 #define SISKA_INTERRUPT_PAGE_FAULT 14
@@ -23,6 +25,18 @@ extern volatile unsigned long _jiffies;
 		asm volatile("lea "#_id", %0\n\t" :"=r"(addr)::); \
 		addr; \
 	})
+
+static inline void switch_to_pgdir(unsigned long pgdir)
+{
+	asm volatile(
+		"movl %0, %%cr3\n\t"
+		"jmp 1f\n\t"
+		"1:\n\t"
+		:
+		:"r"(pgdir)
+		:
+	);
+}
 
 static inline unsigned long get_jiffies()
 {
