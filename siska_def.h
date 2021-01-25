@@ -1,7 +1,7 @@
 #ifndef SISKA_DEF_H
 #define SISKA_DEF_H
 
-#if 1
+#if 0
 #define NULL ((void*)0)
 
 typedef char* siska_va_list;
@@ -9,8 +9,6 @@ typedef char* siska_va_list;
 #define siska_va_start(ap,v) (ap = (siska_va_list)&v + INTSIZEOF(v))
 #define siska_va_arg(ap,t)   (*(t*)((ap += INTSIZEOF(t)) - INTSIZEOF(t)))
 #define siska_va_end(ap)     (ap = (siska_va_list)0)
-
-#include"siska_atomic.h"
 
 #else
 #include<stdio.h>
@@ -20,6 +18,9 @@ typedef char* siska_va_list;
 #define siska_va_arg   va_arg
 #define siska_va_end   va_end
 #endif
+
+#include"siska_atomic.h"
+#include"siska_string.h"
 
 #define SISKA_SYSCALL_FORK    1
 #define SISKA_SYSCALL_SCHED   2

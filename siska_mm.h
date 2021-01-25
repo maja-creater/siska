@@ -66,13 +66,22 @@ static inline siska_page_t* siska_addr_page(unsigned long addr)
 {
 	return siska_pages + (addr >> PG_SHIFT);
 }
-
+#if 0
 void* siska_kmalloc(int size);
 void* siska_krealloc(void* p, int size);
 void  siska_kfree(void* p);
 
-void  siska_memcpy(void* dst, void* src, unsigned long size);
+void  siska_memcpy(void* dst, const    void* src, unsigned long size);
 void  siska_memset(void* dst, unsigned long data, unsigned long size);
+#else
+#include<stdlib.h>
+#include<string.h>
+#define siska_kmalloc  malloc
+#define siska_krealloc realloc
+#define siska_kfree    free 
+#define siska_memcpy   memcpy 
+#define siska_memset   memset
+#endif
 
 int   siska_copy_memory(siska_task_t* child, siska_task_t* parent, unsigned long esp3);
 void  siska_free_memory(siska_task_t* task);

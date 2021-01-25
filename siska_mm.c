@@ -297,7 +297,7 @@ void siska_memset(void* dst, unsigned long data, unsigned long size)
 	);
 }
 
-void siska_memcpy(void* dst, void* src, unsigned long size)
+void siska_memcpy(void* dst, const void* src, unsigned long size)
 {
 	asm volatile(
 		"movl %0, %%ecx\n\t"

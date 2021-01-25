@@ -210,6 +210,12 @@ _msg_err:
 _msg_kernel_too_big:
 .asciz "kernel too big"
 
-.org 510
+.org 500
+_rootfs_data:
+.word 0, 0
+_rootfs_size:
+.word 0, 0
+.word 0
+
 .byte 0x55
 .byte 0xAA

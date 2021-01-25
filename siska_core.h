@@ -4,9 +4,21 @@
 #include"siska_def.h"
 #include"siska_list.h"
 
-typedef struct siska_task_s siska_task_t;
-typedef struct siska_tss_s  siska_tss_t;
-typedef struct siska_mm_s   siska_mm_t;
+typedef struct siska_task_s        siska_task_t;
+typedef struct siska_tss_s         siska_tss_t;
+typedef struct siska_mm_s          siska_mm_t;
+
+typedef struct siska_vfs_s         siska_vfs_t;
+typedef struct siska_fs_s          siska_fs_t;
+typedef struct siska_file_ops_s    siska_file_ops_t;
+typedef struct siska_file_s        siska_file_t;
+typedef struct siska_dev_s         siska_dev_t;
+
+typedef struct siska_sblock_s      siska_sblock_t;
+typedef struct siska_inode_s       siska_inode_t;
+
+typedef struct siska_sblock_dev_s  siska_sblock_dev_t;
+typedef struct siska_inode_dev_s   siska_inode_dev_t;
 
 #define PG_SHIFT 12
 #define PG_SIZE  (1u << PG_SHIFT)
@@ -133,7 +145,11 @@ static inline unsigned char inb_p(unsigned short port)
 }
 
 int siska_console_write(const char* fmt);
+#if 0
 int siska_printk(const char* fmt, ...);
+#else
+#define siska_printk printf
+#endif
 
 #endif
 
