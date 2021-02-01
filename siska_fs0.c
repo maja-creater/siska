@@ -18,6 +18,11 @@ int siska0_find_in_dir(siska_dir_dev_t* dir_dev, siska_inode_dev_t* inode_dev, c
 	if (ret < 0)
 		return -1;
 
+//	siska_printk("%s(), %d, filename: %s\n", __func__, __LINE__, filename);
+//	siska_printk("%s(), %d, offset: %d, block_offset: %d, block_size: %d\n", __func__, __LINE__, offset, inode_dev->block_offset, block_size);
+
+//	siska_printk("%s(), %d, inode_dev->size: %d\n", __func__, __LINE__, inode_dev->size);
+
 	for (i = 0; i < inode_dev->size; ) {
 
 		ret = fs->dev->fops->read(fs->dir, dir_dev, sizeof(siska_dir_dev_t));
@@ -40,16 +45,16 @@ int siska0_find_in_dir(siska_dir_dev_t* dir_dev, siska_inode_dev_t* inode_dev, c
 		i += ret;
 
 		if (!siska_strcmp(filename, name)) {
+			siska_printk("%s(), %d, filename: %s, name: %s\n", __func__, __LINE__, filename, name);
 			siska_kfree(name);
-			break;
+			return 0;
 		}
 
 		siska_kfree(name);
 	}
 
-	if (i >= inode_dev->size)
-		return -404;
-	return 0;
+	siska_printk("%s(), %d, inode_dev->size: %d\n", __func__, __LINE__, inode_dev->size);
+	return -404;
 }
 
 int siska0_read_inode(siska_file_t* file, siska_fs_t* fs, siska_inode_dev_t* inode_dev, unsigned long index)
@@ -93,7 +98,7 @@ static unsigned long __siska0_find_blocks(siska_sblock_dev_t* sblock_dev, unsign
 
 			if (sblock_dev->block_map[i] & (1u << j)) {
 				k = 0;
-				break;
+				continue;
 			}
 
 			if (0 == k)
@@ -227,7 +232,7 @@ static int __siska0_realloc_blocks(siska_fs_t* fs, siska_sblock_dev_t* sbd, sisk
 	return 0;
 }
 
-int siska0_write_dir(siska_file_t* file, siska_fs_t* fs, siska_inode_dev_t* parent)
+int siska0_write_dir(siska_file_t* file, siska_fs_t* fs, siska_inode_dev_t* parent, unsigned long parent_index)
 {
 	siska_dir_dev_t* dir_dev;
 	unsigned long    block_size;
@@ -320,6 +325,14 @@ int siska0_write_dir(siska_file_t* file, siska_fs_t* fs, siska_inode_dev_t* pare
 		if (empty_pos == parent->size)
 			parent->size += sizeof(siska_dir_dev_t) + filename_len;
 
+		offset = SISKA_FS0_INODE_START + sizeof(siska_inode_dev_t) * parent_index;
+		ret    = fs->dev->fops->lseek(fs->dir, offset, SISKA_SEEK_SET);
+		if (ret < 0)
+			goto _error;
+
+		ret = fs->dev->fops->write(fs->dir, parent, sizeof(siska_inode_dev_t));
+		if (ret != sizeof(siska_inode_dev_t))
+			goto _error;
 		return 0;
 	}
 
@@ -328,7 +341,7 @@ _error:
 	return -1;
 }
 
-int siska0_create_inode(siska_file_t* file, siska_fs_t* fs, siska_inode_dev_t* parent)
+int siska0_create_inode(siska_file_t* file, siska_fs_t* fs, siska_inode_dev_t* parent, unsigned long parent_index)
 {
 	siska_sblock_dev_t* sblock_dev;
 	siska_sblock_t*     sblock;
@@ -394,12 +407,24 @@ _found:
 
 	file->inode = inode;
 
-	if (siska0_write_dir(file, fs, parent) < 0) {
+	if (siska0_write_dir(file, fs, parent, parent_index) < 0) {
 		siska_inode_free(inode);
 		return -1;
 	}
 
 	sblock_dev->inode_map[i] |= 1u << j;
+
+	int ret = fs->dev->fops->lseek(fs->dir, 0, SISKA_SEEK_SET);
+	if (ret < 0) {
+		siska_inode_free(inode);
+		return -1;
+	}
+
+	ret = fs->dev->fops->write(fs->dir, sblock_dev, sizeof(siska_sblock_dev_t));
+	if (ret != sizeof(siska_sblock_dev_t)) {
+		siska_inode_free(inode);
+		return -1;
+	}
 
 	inode->next    = sblock->inodes;
 	sblock->inodes = inode;
@@ -422,8 +447,6 @@ int siska0_open_in_sblock(siska_file_t* file, siska_fs_t* fs, int flags, unsigne
 		return -1;
 	}
 
-	block_size = 1024 << fs->sblock->sblock_dev->block_size;
-
 	// read first inode
 	int ret = fs->dev->fops->lseek(fs->dir, SISKA_FS0_INODE_START, SISKA_SEEK_SET);
 	if (ret < 0)
@@ -433,22 +456,27 @@ int siska0_open_in_sblock(siska_file_t* file, siska_fs_t* fs, int flags, unsigne
 	if (ret != sizeof(siska_inode_dev_t))
 		goto _error;
 
+	siska_printk("%s(), %d, inode_dev->size: %d\n", __func__, __LINE__, inode_dev->size);
+
 	// read sub dirs of fs rootdir
 	ret = siska0_find_in_dir(dir_dev, inode_dev, file->name, fs);
 	if (-1 == ret)
 		goto _error;
 
 	if (-404 == ret) {
-		siska_printk("%s(), %d, file->name: %s\n", __func__, __LINE__, file->name);
+		siska_printk("%s(), %d, file->name: %s, ret: %d\n", __func__, __LINE__, file->name, ret);
 
-		ret = siska0_create_inode(file, fs, inode_dev);
-		if (ret < 0)
-			goto _error;
+		ret = siska0_create_inode(file, fs, inode_dev, 0);
+
+		siska_printk("%s(), %d, file->name: %s, ret: %d\n", __func__, __LINE__, file->name, ret);
 	} else {
 		ret = siska0_read_inode(file, fs, inode_dev, dir_dev->inode_index);
-		if (ret < 0)
-			goto _error;
+
+//		siska_printk("%s(), %d, file->name: %s, ret: %d\n", __func__, __LINE__, file->name, ret);
 	}
+
+	if (ret < 0)
+		goto _error;
 
 	siska_kfree(dir_dev);
 	return 0;
@@ -470,11 +498,12 @@ int siska0_recursive_open(siska_file_t* file, siska_fs_t* fs, int flags, unsigne
 		return siska0_open_in_sblock(file, fs, flags, mode);
 
 	if (!file->parent->inode || !file->parent->inode->inode_dev) {
-//		siska_printk("%s(), %d, file->parent: %s\n", __func__, __LINE__, file->parent->name);
 
 		int ret = siska0_recursive_open(file->parent, fs, file->parent->flags, 0);
-		if (ret < 0)
+		if (ret < 0) {
+			siska_printk("%s(), %d, file->parent: %s\n", __func__, __LINE__, file->parent->name);
 			return -1;
+		}
 	}
 
 	siska_inode_dev_t*  inode_dev;
@@ -489,16 +518,19 @@ int siska0_recursive_open(siska_file_t* file, siska_fs_t* fs, int flags, unsigne
 	int ret = siska0_find_in_dir(dir_dev, inode_dev, file->name, fs);
 	if (-1 == ret)
 		goto _error;
+	siska_printk("%s(), %d, ret: %d, file->name: %s, type: %d\n", __func__, __LINE__, ret, file->name, siska_file_type(file));
 
-	if (-404 == ret) {
-		ret = siska0_create_inode(file, fs, inode_dev);
-		if (ret < 0)
-			goto _error;
-	} else {
+	if (-404 == ret)
+		ret = siska0_create_inode(file, fs, inode_dev, file->parent->inode->index);
+	else {
 		ret = siska0_read_inode(file, fs, inode_dev, dir_dev->inode_index);
-		if (ret < 0)
-			goto _error;
 	}
+
+	if (ret < 0)
+		goto _error;
+
+	siska_printk("%s(), %d, ret: %d, file->name: %s, type: %d\n", __func__, __LINE__, ret, file->name, siska_file_type(file));
+	siska_printk("%s(), %d, file->inode->inode_dev->size: %d\n", __func__, __LINE__, file->inode->inode_dev->size);
 
 	siska_kfree(dir_dev);
 	return 0;
@@ -538,7 +570,43 @@ int siska0_read(siska_file_t* file, void* buf, int size)
 	if (!file || !buf || size < 0)
 		return -1;
 
-	return -1;
+	if (!file->inode || !file->inode->inode_dev)
+		return -1;
+
+	if (0 == size)
+		return 0;
+
+	siska_fs_t* fs;
+
+	fs = siska_vfs_find_fs(file->parent);
+	if (!fs)
+		return -1;
+
+	siska_sblock_dev_t* sblock_dev = file->inode->sblock->sblock_dev;
+	siska_inode_dev_t*  inode_dev  = file->inode->inode_dev;
+
+	if (size > inode_dev->size - file->offset)
+		size = inode_dev->size - file->offset;
+
+	if (0 == size)
+		return 0;
+
+	unsigned long block_size = 1024u << sblock_dev->block_size;
+
+	unsigned long offset = SISKA_FS0_BLOCK_START
+		+ inode_dev->block_offset * block_size
+		+ file->offset;
+
+	int ret = fs->dev->fops->lseek(fs->dir, offset, SISKA_SEEK_SET);
+	if (ret < 0)
+		return -1;
+
+	ret = fs->dev->fops->read(fs->dir, buf, size);
+	if (ret != size)
+		return -1;
+
+	file->offset += size;
+	return ret;
 }
 
 int siska0_write(siska_file_t* file, const void* buf, int size)
@@ -546,19 +614,17 @@ int siska0_write(siska_file_t* file, const void* buf, int size)
 	if (!file || !buf || size < 0)
 		return -1;
 
-	if (!file->inode || !file->inode->inode_dev) {
-		printf("%s(),%d, inode: %p\n", __func__, __LINE__, file->inode);
-		printf("%s(),%d, inode_dev: %p\n", __func__, __LINE__, file->inode->inode_dev);
+	if (!file->inode || !file->inode->inode_dev)
 		return -1;
-	}
+
+	if (0 == size)
+		return 0;
 
 	siska_fs_t* fs;
 
 	fs = siska_vfs_find_fs(file->parent);
-	if (!fs) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (!fs)
 		return -1;
-	}
 
 	siska_sblock_dev_t* sblock_dev = file->inode->sblock->sblock_dev;
 	siska_inode_dev_t*  inode_dev  = file->inode->inode_dev;
@@ -570,10 +636,8 @@ int siska0_write(siska_file_t* file, const void* buf, int size)
 
 		inode_dev->block_offset = __siska0_find_blocks(sblock_dev, nblocks);
 
-		if (0 == inode_dev->block_offset) {
-			printf("%s(),%d\n", __func__, __LINE__);
+		if (0 == inode_dev->block_offset)
 			return -1;
-		}
 
 		inode_dev->block_count = nblocks;
 
@@ -584,10 +648,8 @@ int siska0_write(siska_file_t* file, const void* buf, int size)
 		unsigned long append_size = (nblocks - inode_dev->block_count) * block_size;
 
 		int ret = __siska0_realloc_blocks(fs, sblock_dev, inode_dev, append_size);
-		if (ret < 0) {
-			printf("%s(),%d\n", __func__, __LINE__);
+		if (ret < 0)
 			return -1;
-		}
 	}
 
 	unsigned long offset = SISKA_FS0_BLOCK_START
@@ -595,36 +657,56 @@ int siska0_write(siska_file_t* file, const void* buf, int size)
 		+ file->offset;
 
 	int ret = fs->dev->fops->lseek(fs->dir, offset, SISKA_SEEK_SET);
-	if (ret < 0) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (ret < 0)
 		return -1;
-	}
 
 	ret = fs->dev->fops->write(fs->dir, buf, size);
-	if (ret != size) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (ret != size)
 		return -1;
-	}
+
+	if (inode_dev->size < file->offset + size)
+		inode_dev->size = file->offset + size;
+
+	offset = SISKA_FS0_INODE_START + sizeof(siska_inode_dev_t) * file->inode->index;
+	ret    = fs->dev->fops->lseek(fs->dir, offset, SISKA_SEEK_SET);
+	if (ret < 0)
+		return -1;
+
+	ret = fs->dev->fops->write(fs->dir, inode_dev, sizeof(siska_inode_dev_t));
+	if (ret != sizeof(siska_inode_dev_t))
+		return -1;
+	siska_printk("%s(), %d, file->inode->index: %d, inode_dev->size: %d\n",
+			__func__, __LINE__, file->inode->index, inode_dev->size);
+
+	ret = fs->dev->fops->lseek(fs->dir, 0, SISKA_SEEK_SET);
+	if (ret < 0)
+		return -1;
+
+	ret = fs->dev->fops->write(fs->dir, sblock_dev, sizeof(siska_sblock_dev_t));
+	if (ret != sizeof(siska_sblock_dev_t))
+		return -1;
+
+	file->offset += size;
 	return ret;
 }
 
 int siska0_lseek(siska_file_t* file, long offset, int whence)
 {
-	if (!file || !file->dev || offset < 0 || SISKA_SEEK_SET != whence)
+	if (!file || offset < 0 || SISKA_SEEK_SET != whence)
 		return -1;
 
-	file->dev->priv_pos = offset;
-	return 0;
+	file->offset = offset;
+	return offset;
 }
 
 int siska0_sync(siska_file_t* file)
 {
-	return 0;
+	return -1;
 }
 
 int siska0_ioctl(siska_file_t* file, unsigned long cmd, ...)
 {
-	return 0;
+	return -1;
 }
 
 siska_file_ops_t siska_fops_siska0 = 
@@ -648,25 +730,19 @@ int siska0_mkfs(siska_file_t* devfile)
 
 	siska_dev_t* dev;
 
-	if (!devfile || !devfile->dev) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (!devfile || !devfile->dev)
 		return -1;
-	}
 
 	dev = devfile->dev;
 
-	if (!dev->fops->write || !dev->fops->lseek) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (!dev->fops->write || !dev->fops->lseek)
 		return -1;
-	}
 
 	int size   = sizeof(siska_sblock_dev_t) + sizeof(siska_inode_dev_t);
 
 	sblock_dev = siska_kmalloc(size);
-	if (!sblock_dev) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (!sblock_dev)
 		return -1;
-	}
 
 	inode_dev = (siska_inode_dev_t*)((char*)sblock_dev + sizeof(siska_sblock_dev_t));
 
@@ -702,16 +778,12 @@ int siska0_mkfs(siska_file_t* devfile)
 	inode_dev->name[7] = '\0';
 
 	int ret = dev->fops->lseek(devfile, 0, SISKA_SEEK_SET);
-	if (ret < 0) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (ret < 0)
 		return -1;
-	}
 
 	ret = dev->fops->write(devfile, sblock_dev, size);
-	if (ret != size) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (ret != size)
 		return -1;
-	}
 
 	return 0;
 }

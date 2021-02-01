@@ -66,7 +66,7 @@ static inline siska_page_t* siska_addr_page(unsigned long addr)
 {
 	return siska_pages + (addr >> PG_SHIFT);
 }
-#if 0
+#ifdef ON_BOCHS
 void* siska_kmalloc(int size);
 void* siska_krealloc(void* p, int size);
 void  siska_kfree(void* p);

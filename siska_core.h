@@ -145,7 +145,7 @@ static inline unsigned char inb_p(unsigned short port)
 }
 
 int siska_console_write(const char* fmt);
-#if 0
+#ifdef ON_BOCHS
 int siska_printk(const char* fmt, ...);
 #else
 #define siska_printk printf

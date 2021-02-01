@@ -285,14 +285,12 @@ void siska_memset(void* dst, unsigned long data, unsigned long size)
 {
 	asm volatile(
 		"movl %0, %%ecx\n\t"
-		"movl %2, %%edi\n\t"
-		"movl %3, %%eax\n\t"
+		"movl %1, %%edi\n\t"
+		"movl %2, %%eax\n\t"
 		"cld\n\t"
-		"rep  stosl\n\t"
-		"movl %1, %%ecx\n\t"
 		"rep  stosb\n\t"
 		:
-		:"r"(size >> 2), "r"(size & 0x3), "r"(dst), "r"(data)
+		:"r"(size), "r"(dst), "r"(data)
 		:"ecx", "edi", "eax"
 	);
 }
@@ -301,14 +299,12 @@ void siska_memcpy(void* dst, const void* src, unsigned long size)
 {
 	asm volatile(
 		"movl %0, %%ecx\n\t"
-		"movl %2, %%edi\n\t"
-		"movl %3, %%esi\n\t"
+		"movl %1, %%edi\n\t"
+		"movl %2, %%esi\n\t"
 		"cld\n\t"
-		"rep  movsl\n\t"
-		"movl %1, %%ecx\n\t"
 		"rep  movsb\n\t"
 		:
-		:"r"(size >> 2), "r"(size & 0x3), "r"(dst), "r"(src)
+		:"r"(size), "r"(dst), "r"(src)
 		:"ecx", "edi", "esi"
 	);
 }

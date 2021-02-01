@@ -9,8 +9,8 @@ static siska_file_ops_t*  siska_fops_head = NULL;
 
 #define ROOTFS_OFFSET_PTR (0x90000 + 500)
 #define ROOTFS_SIZE_PTR   (0x90000 + 504)
-#define ROOTFS_OFFSET     ((*(unsigned long*) ROOTFS_OFFSET_PTR) << 9)
-#define ROOTFS_SIZE       ((*(unsigned long*) ROOTFS_SIZE_PTR)   << 9)
+#define ROOTFS_OFFSET     ((*(volatile unsigned long*) ROOTFS_OFFSET_PTR) << 9)
+#define ROOTFS_SIZE       ((*(volatile unsigned long*) ROOTFS_SIZE_PTR)   << 9)
 
 extern siska_vfs_t  siska_fs_siska0;
 
@@ -60,27 +60,20 @@ int siska_vfs_mkfs(siska_file_t* devfile, const char* fsname)
 {
 	siska_vfs_t* vfs;
 
-	if (!devfile || !fsname) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (!devfile || !fsname)
 		return -1;
-	}	
 
 	for (vfs = siska_vfs_head; vfs; vfs = vfs->next) {
 		if (!siska_strcmp(vfs->name, fsname))
 			break;
 	}
 
-	if (!vfs) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (!vfs)
 		return -1;
-	}
 
-	if (vfs->mkfs) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (vfs->mkfs)
 		return vfs->mkfs(devfile);
-	}
 
-	printf("%s(),%d\n", __func__, __LINE__);
 	return -1;
 }
 
@@ -312,18 +305,14 @@ _error:
 
 int siska_vfs_write(siska_file_t* file, const char* buf, int count)
 {
-	if (!file || !buf || count < 0) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (!file || !buf || count < 0)
 		return -1;
-	}
 
 	if (0 == count)
 		return 0;
 
-	if (file->ops && file->ops->write) {
-		printf("%s(),%d\n", __func__, __LINE__);
+	if (file->ops && file->ops->write)
 		return file->ops->write(file, buf, count);
-	}
 
 	siska_printk("write file: %s, file->ops: %p\n", file->name, file->ops);
 	return -1;
@@ -337,22 +326,22 @@ int siska_vfs_read(siska_file_t* file, char* buf, int count)
 	if (0 == count)
 		return 0;
 
-	if (!file->ops) {
-
-		siska_file_t* f;
-
-		for (f = file; f; f = f->parent) {
-			if (f->fs) {
-				file->ops = f->fs->fops;
-				break;
-			}
-		}
-	}
-
 	if (file->ops && file->ops->read)
 		return file->ops->read(file, buf, count);
 
 	siska_printk("read file: %s, file->ops: %p\n", file->name, file->ops);
+	return -1;
+}
+
+int siska_vfs_lseek(siska_file_t* file, long offset, int whence)
+{
+	if (!file)
+		return -1;
+
+	if (file->ops && file->ops->lseek)
+		return file->ops->lseek(file, offset, whence);
+
+	siska_printk("lseek file: %s, file->ops: %p\n", file->name, file->ops);
 	return -1;
 }
 
@@ -511,6 +500,13 @@ void siska_inode_free(siska_inode_t* inode)
 		siska_kfree(inode);
 	}
 }
+#ifndef ON_BOCHS
+#include<sys/types.h>
+#include<sys/stat.h>
+#include<sys/mman.h>
+#include<fcntl.h>
+#include<unistd.h>
+#endif
 
 int siska_fs_init()
 {
@@ -518,12 +514,23 @@ int siska_fs_init()
 
 	siska_dev_root.name ="rootdev";
 	siska_dev_root.fops = &siska_fops_memory_dev;
-#if 0
+#ifdef ON_BOCHS
 	siska_dev_root.priv = (void*)ROOTFS_OFFSET;
 	siska_dev_root.priv_size = ROOTFS_SIZE;
 #else
-	siska_dev_root.priv = malloc(1024 * 1024);
-	siska_dev_root.priv_size = 1024 * 1024;
+#if 0
+	siska_dev_root.priv = malloc(1024 * 10);
+	siska_dev_root.priv_size = 1024 * 10;
+#else
+	int fd = open("fs.bin", O_RDONLY, 0666);
+	if (fd < 0)
+		return -1;
+
+	siska_dev_root.priv = mmap(NULL, 1024 * 10, PROT_READ , MAP_PRIVATE, fd, 0);
+	if (MAP_FAILED == siska_dev_root.priv)
+		return -1;
+	siska_dev_root.priv_size = 1024 * 10;
+#endif
 #endif
 	siska_dev_root.priv_pos  = 0;
 
@@ -548,16 +555,18 @@ int siska_fs_init()
 	siska_dir_root.inode  = NULL;
 	siska_dir_root.dev    = &siska_dev_root;
 	siska_dir_root.fs     = NULL;
-#if 1
+#if 0
 	if (siska_vfs_mkfs(&siska_dir_root, "siska0") < 0) {
 		printf("%s(),%d\n", __func__, __LINE__);
 		return -1;
 	}
 #endif
-	return siska_vfs_mount(&siska_dir_root, &siska_dev_root, "siska0");
+	int ret = siska_vfs_mount(&siska_dir_root, &siska_dev_root, "siska0");
+	siska_printk("root fs init, ret: %d\n", ret);
+	return ret;
 }
 
-#if 1
+#ifndef ON_BOCHS
 int main()
 {
 	int ret = siska_fs_init();
@@ -567,18 +576,6 @@ int main()
 	}
 
 	siska_file_t* file = NULL;
-
-	ret = siska_vfs_open(&file, "/home",
-			SISKA_FILE_DIR | SISKA_FILE_FLAG_R | SISKA_FILE_FLAG_W,
-			0777);
-	if (ret < 0) {
-		printf("%s(),%d\n", __func__, __LINE__);
-		return -1;
-	}
-	printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
-	printf("\n");
-	siska_dir_print_recursive(&siska_dir_root, &siska_dir_root);
-	printf("\n");
 
 	ret = siska_vfs_open(&file, "/home/my",
 			SISKA_FILE_FILE | SISKA_FILE_FLAG_R | SISKA_FILE_FLAG_W,
@@ -592,13 +589,36 @@ int main()
 	printf("\n");
 	siska_dir_print_recursive(&siska_dir_root, &siska_dir_root);
 
+#if 0
 	ret = siska_vfs_write(file, "hello", 6);
 	if (ret < 0) {
 		printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
 		return -1;
 	}
-
 	printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
+#endif
+
+	char buf[16] = {0};
+#if 1
+	ret = siska_vfs_lseek(file, 2, SISKA_SEEK_SET);
+	if (ret < 0) {
+		printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
+		return -1;
+	}
+#endif
+	ret = siska_vfs_read(file, buf, sizeof(buf) - 1);
+	if (ret < 0) {
+		printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
+		return -1;
+	}
+	printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
+	printf("%s(),%d, buf: %s\n", __func__, __LINE__, buf);
+#if 0
+	int fd = open("fs.bin", O_RDWR | O_CREAT | O_TRUNC, 0666);
+	if (fd > 0) {
+		ret = write(fd, siska_dev_root.priv, siska_dev_root.priv_size);
+	}
+#endif
 	return 0;
 }
 #endif

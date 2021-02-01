@@ -139,7 +139,9 @@ int  siska_vfs_umount(siska_file_t* dir);
 
 int  siska_vfs_open (siska_file_t** pfile, const char* path, int flags, int mode);
 int  siska_vfs_write(siska_file_t*  file,  const char* buf,  int count);
-int  siska_vfs_read (siska_file_t*  file,        char* buf,  int count);
+
+int  siska_vfs_read (siska_file_t*  file,  char* buf,    int count);
+int  siska_vfs_lseek(siska_file_t*  file,  long  offset, int whence);
 
 void siska_dir_print(siska_file_t* dir);
 void siska_dir_print_recursive(siska_file_t* dir, siska_file_t* root);

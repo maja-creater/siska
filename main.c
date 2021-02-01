@@ -1,6 +1,7 @@
 
 #include"siska_task.h"
 #include"siska_mm.h"
+#include"siska_vfs.h"
 #include"siska_api.h"
 
 void siska_console_init();
@@ -71,6 +72,28 @@ int _main()
 
 	siska_task_init();
 	siska_mm_init();
+	siska_fs_init();
+
+#if 1
+	siska_file_t* file = NULL;
+
+	int ret = siska_vfs_open(&file, "/home/my",
+			SISKA_FILE_FILE | SISKA_FILE_FLAG_R | SISKA_FILE_FLAG_W,
+			0777);
+	siska_printk("open /home/my, ret: %d\n", ret);
+	if (ret < 0) {
+		return -1;
+	}
+#if 1
+	char buf[6];
+	ret = siska_vfs_read(file, buf, sizeof(buf) - 1);
+	if (ret < 0) {
+		siska_printk("read /home/my error, ret: %d\n", ret);
+		return -1;
+	}
+	siska_printk("/home/my, ret: %d, buf: %s\n", ret, buf);
+#endif
+#endif
 
 	tss0->esp0 = (unsigned long)task0 + PG_SIZE;
 	tss0->ss0  = 0x10;

@@ -1,7 +1,8 @@
 #ifndef SISKA_DEF_H
 #define SISKA_DEF_H
 
-#if 0
+#define ON_BOCHS
+#ifdef ON_BOCHS
 #define NULL ((void*)0)
 
 typedef char* siska_va_list;

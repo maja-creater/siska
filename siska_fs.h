@@ -7,8 +7,8 @@
 // inode, 244 * 8 * sizeof(inode_dev)
 // block, 244 * 8 * (1024 << sblock_dev->block_size)
 
-#define SISKA_FS0_NB_INODES    (244u << 3)
-#define SISKA_FS0_NB_BLOCKS    (244u << 3)
+#define SISKA_FS0_NB_INODES    (16u << 3)
+#define SISKA_FS0_NB_BLOCKS    (16u << 3)
 #define SISKA_FS0_INODE_START  (sizeof(siska_sblock_dev_t))
 #define SISKA_FS0_BLOCK_START  (sizeof(siska_sblock_dev_t) + SISKA_FS0_NB_INODES * sizeof(siska_inode_dev_t))
 

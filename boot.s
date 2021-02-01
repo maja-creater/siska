@@ -7,7 +7,7 @@ INIT_SECTIONS  = 1
 INIT_SECTION_START = 1
 
 SYS_SEG       = 0x1000
-SYS_SECTIONS  = 105
+SYS_SECTIONS  = 137 + 1 + 20
 SYS_SECTION_START = 2
 
 .code16
@@ -130,7 +130,7 @@ _rep_read:
 	addw %ax, %dx
 	subw $128, %dx
 	jle  3f
-	movb %dl, %al
+	subb %dl, %al
 3:
 	movb $0x2, %ah
 
@@ -212,9 +212,9 @@ _msg_kernel_too_big:
 
 .org 500
 _rootfs_data:
-.word 0, 0
+.word 138, 0
 _rootfs_size:
-.word 0, 0
+.word 20, 0
 .word 0
 
 .byte 0x55

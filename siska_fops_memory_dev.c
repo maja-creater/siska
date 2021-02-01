@@ -34,6 +34,8 @@ int memory_dev_read(siska_file_t* file, void* buf, int size)
 
 	len = size > len ? len : size;
 
+//	siska_printk("%s(), %d, dev p: %p, len: %d\n", __func__, __LINE__, dev->priv + dev->priv_pos, len);
+
 	siska_memcpy(buf, dev->priv + dev->priv_pos, len);
 	dev->priv_pos += len;
 
@@ -68,6 +70,7 @@ int memory_dev_lseek(siska_file_t* file, long offset, int whence)
 		return -1;
 
 	file->dev->priv_pos = offset;
+//	siska_printk("%s(), %d, dev->priv_pos: %d\n", __func__, __LINE__, file->dev->priv_pos);
 	return 0;
 }
 
