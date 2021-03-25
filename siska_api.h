@@ -18,6 +18,7 @@ static inline int siska_api_syscall(unsigned long num, unsigned long arg0, unsig
 }
 
 int siska_api_printf(const char* fmt, ...);
+int siska_api_execve(const char* filename, char* const argv, char* const envp);
 
 static inline int siska_api_getpid()
 {
@@ -28,6 +29,7 @@ static inline int siska_api_getppid()
 {
 	return siska_api_syscall(SISKA_SYSCALL_GETPPID, 0, 0, 0);
 }
+
 
 #endif
 

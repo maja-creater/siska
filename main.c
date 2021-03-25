@@ -44,6 +44,8 @@ void _syscall_init()
 
 	set_syscall_handler(SISKA_SYSCALL_GETPID,  siska_getpid);
 	set_syscall_handler(SISKA_SYSCALL_GETPPID, siska_getppid);
+
+	set_syscall_handler(SISKA_SYSCALL_EXECVE,  siska_execve);
 }
 
 int _main()
@@ -74,24 +76,24 @@ int _main()
 	siska_mm_init();
 	siska_fs_init();
 
-#if 1
+#if 0
 	siska_file_t* file = NULL;
 
-	int ret = siska_vfs_open(&file, "/home/my",
+	int ret = siska_vfs_open(&file, "/home/execve",
 			SISKA_FILE_FILE | SISKA_FILE_FLAG_R | SISKA_FILE_FLAG_W,
 			0777);
-	siska_printk("open /home/my, ret: %d\n", ret);
+	siska_printk("open /home/execve, ret: %d\n", ret);
 	if (ret < 0) {
 		return -1;
 	}
 #if 1
-	char buf[6];
+	char buf[64];
 	ret = siska_vfs_read(file, buf, sizeof(buf) - 1);
 	if (ret < 0) {
-		siska_printk("read /home/my error, ret: %d\n", ret);
+		siska_printk("read /home/execve error, ret: %d\n", ret);
 		return -1;
 	}
-	siska_printk("/home/my, ret: %d, buf: %s\n", ret, buf);
+	siska_printk("/home/execve, ret: %d, buf: %s\n", ret, buf);
 #endif
 #endif
 
@@ -157,6 +159,7 @@ int _main()
 		while (1) {
 		}
 	} else if (0 == cpid) {
+		siska_api_execve(get_asm_addr(_execve_msg), 0, 0);
 		while (1) {
 
 //			siska_api_syscall(SISKA_SYSCALL_KILL, 0, SISKA_SIGINT, 0);
@@ -169,7 +172,7 @@ int _main()
 		while (1) {
 //			siska_api_printf(get_asm_addr(_fork0_msg));
 
-			siska_api_syscall(SISKA_SYSCALL_KILL, 1, SISKA_SIGINT, 0);
+//			siska_api_syscall(SISKA_SYSCALL_KILL, 1, SISKA_SIGINT, 0);
 		}
 	}
 #endif

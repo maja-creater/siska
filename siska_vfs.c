@@ -3,6 +3,7 @@
 
 static siska_dev_t        siska_dev_root;
 static siska_file_t       siska_dir_root;
+static siska_spinlock_t   siska_spinlock_root;
 
 static siska_vfs_t*       siska_vfs_head  = NULL;
 static siska_file_ops_t*  siska_fops_head = NULL;
@@ -186,6 +187,9 @@ int siska_vfs_open(siska_file_t** pfile, const char* path, int flags, int mode)
 
 	p0++;
 	p1 = p0;
+
+	unsigned long eflags;
+	siska_spin_lock_irqsave(&siska_spinlock_root, eflags);
 	while (*p1) {
 		p1++;
 
@@ -209,6 +213,8 @@ int siska_vfs_open(siska_file_t** pfile, const char* path, int flags, int mode)
 
 		} else if (SISKA_FILE_DIR != siska_file_type(file)) {
 			siska_printk("file: %s, already exist\n", file->name);
+
+			siska_spin_unlock_irqrestore(&siska_spinlock_root, eflags);
 			return -1;
 		}
 
@@ -238,6 +244,8 @@ int siska_vfs_open(siska_file_t** pfile, const char* path, int flags, int mode)
 
 		} else if (siska_file_type(file) == siska_file_type_of_flags(flags)) {
 			siska_printk("file: %s, already exist\n", file->name);
+
+			siska_spin_unlock_irqrestore(&siska_spinlock_root, eflags);
 			return -1;
 		}
 	}
@@ -261,12 +269,16 @@ int siska_vfs_open(siska_file_t** pfile, const char* path, int flags, int mode)
 		}
 
 		if (file->ops->open) {
-			unsigned int flags;
+			unsigned int fflags;
 			int ret;
 
-			flags = file->flags;
+			fflags = file->flags;
+
+			siska_spin_lock(&file->lock);
 			ret   = file->ops->open(file, flags, mode);
-			file->flags = flags;
+			siska_spin_unlock(&file->lock);
+
+			file->flags = fflags;
 
 			if (ret < 0) {
 				siska_printk("file: %s, ops->open() error\n", file->name);
@@ -276,21 +288,25 @@ int siska_vfs_open(siska_file_t** pfile, const char* path, int flags, int mode)
 			}
 		}
 	}
-
+	siska_spin_unlock_irqrestore(&siska_spinlock_root, eflags);
 
 	*pfile = file;
 	return 0;
 
 _error:
-	if (!sentinel)
+	if (!sentinel) {
+		siska_spin_unlock_irqrestore(&siska_spinlock_root, eflags);
 		return -1;
+	}
 
 //	siska_printk("delete sentinel file: %s, type: %d\n", sentinel->name, siska_file_get_type(sentinel));
 
 	while (dir != sentinel) {
 
-		if (!siska_list_empty(&dir->childs))
+		if (!siska_list_empty(&dir->childs)) {
+			siska_spin_unlock_irqrestore(&siska_spinlock_root, eflags);
 			return -1;
+		}
 
 		siska_file_t* tmp = dir->parent;
 
@@ -300,6 +316,8 @@ _error:
 		siska_file_free(dir);
 		dir = tmp;
 	}
+
+	siska_spin_unlock_irqrestore(&siska_spinlock_root, eflags);
 	return -1;
 }
 
@@ -311,11 +329,18 @@ int siska_vfs_write(siska_file_t* file, const char* buf, int count)
 	if (0 == count)
 		return 0;
 
-	if (file->ops && file->ops->write)
-		return file->ops->write(file, buf, count);
+	unsigned long flags;
+	int ret = -1;
 
-	siska_printk("write file: %s, file->ops: %p\n", file->name, file->ops);
-	return -1;
+	siska_spin_lock_irqsave(&file->lock, flags);
+	if (file->ops && file->ops->write)
+		ret = file->ops->write(file, buf, count);
+	siska_spin_unlock_irqrestore(&file->lock, flags);
+
+	if (ret < 0)
+		siska_printk("write file: %s, file->ops: %p\n", file->name, file->ops);
+
+	return ret;
 }
 
 int siska_vfs_read(siska_file_t* file, char* buf, int count)
@@ -326,11 +351,18 @@ int siska_vfs_read(siska_file_t* file, char* buf, int count)
 	if (0 == count)
 		return 0;
 
-	if (file->ops && file->ops->read)
-		return file->ops->read(file, buf, count);
+	unsigned long flags;
+	int ret = -1;
 
-	siska_printk("read file: %s, file->ops: %p\n", file->name, file->ops);
-	return -1;
+	siska_spin_lock_irqsave(&file->lock, flags);
+	if (file->ops && file->ops->read)
+		ret = file->ops->read(file, buf, count);
+	siska_spin_unlock_irqrestore(&file->lock, flags);
+
+	if (ret < 0)
+		siska_printk("read file: %s, file->ops: %p\n", file->name, file->ops);
+
+	return ret;
 }
 
 int siska_vfs_lseek(siska_file_t* file, long offset, int whence)
@@ -338,11 +370,18 @@ int siska_vfs_lseek(siska_file_t* file, long offset, int whence)
 	if (!file)
 		return -1;
 
-	if (file->ops && file->ops->lseek)
-		return file->ops->lseek(file, offset, whence);
+	unsigned long flags;
+	int ret = -1;
 
-	siska_printk("lseek file: %s, file->ops: %p\n", file->name, file->ops);
-	return -1;
+	siska_spin_lock_irqsave(&file->lock, flags);
+	if (file->ops && file->ops->lseek)
+		ret = file->ops->lseek(file, offset, whence);
+	siska_spin_unlock_irqrestore(&file->lock, flags);
+
+	if (ret < 0)
+		siska_printk("lseek file: %s, file->ops: %p\n", file->name, file->ops);
+
+	return ret;
 }
 
 void siska_dir_print(siska_file_t* dir)
@@ -432,6 +471,8 @@ siska_file_t* siska_file_alloc()
 	file->flags  = 0;
 	file->mode   = 0;
 
+	siska_spinlock_init(&file->lock);
+
 	file->data   = NULL;
 	file->size   = 0;
 	file->offset = 0;
@@ -512,6 +553,8 @@ int siska_fs_init()
 {
 	siska_vfs_init();
 
+	siska_spinlock_init(&siska_spinlock_root);
+
 	siska_dev_root.name ="rootdev";
 	siska_dev_root.fops = &siska_fops_memory_dev;
 #ifdef ON_BOCHS
@@ -567,45 +610,41 @@ int siska_fs_init()
 }
 
 #ifndef ON_BOCHS
-int main()
+static int make_file(siska_file_t** pfile, const char* fname, const char* data, int len)
 {
-	int ret = siska_fs_init();
-	if (ret < 0) {
-		printf("%s(),%d\n", __func__, __LINE__);
-		return -1;
-	}
-
 	siska_file_t* file = NULL;
 
-	ret = siska_vfs_open(&file, "/home/my",
+	int ret = siska_vfs_open(&file, fname,
 			SISKA_FILE_FILE | SISKA_FILE_FLAG_R | SISKA_FILE_FLAG_W,
 			0777);
 	if (ret < 0) {
-		printf("%s(),%d\n", __func__, __LINE__);
+		printf("%s(),%d, error\n", __func__, __LINE__);
 		return -1;
 	}
-	printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
 
-	printf("\n");
-	siska_dir_print_recursive(&siska_dir_root, &siska_dir_root);
+	if (data && len > 0) {
+		ret = siska_vfs_write(file, data, len);
+		if (ret < 0) {
+			printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
+			return -1;
+		}
+		printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
+	}
 
-#if 0
-	ret = siska_vfs_write(file, "hello", 6);
+	*pfile = file;
+	return 0;
+}
+
+static int read_file(siska_file_t* file)
+{
+	unsigned char buf[128] = {0};
+
+	int ret = siska_vfs_lseek(file, 0, SISKA_SEEK_SET);
 	if (ret < 0) {
 		printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
 		return -1;
 	}
-	printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
-#endif
 
-	char buf[16] = {0};
-#if 1
-	ret = siska_vfs_lseek(file, 2, SISKA_SEEK_SET);
-	if (ret < 0) {
-		printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
-		return -1;
-	}
-#endif
 	ret = siska_vfs_read(file, buf, sizeof(buf) - 1);
 	if (ret < 0) {
 		printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
@@ -613,6 +652,68 @@ int main()
 	}
 	printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
 	printf("%s(),%d, buf: %s\n", __func__, __LINE__, buf);
+
+	printf("%s(),%d, binary:\n", __func__, __LINE__);
+
+	int i;
+	for (i = 0; i < ret; i++)
+		printf("%#x ", buf[i]);
+	printf("\n");
+	return 0;
+}
+
+int main()
+{
+	int ret = siska_fs_init();
+	if (ret < 0) {
+		printf("%s(),%d, error\n", __func__, __LINE__);
+		return -1;
+	}
+
+	siska_file_t* file  = NULL;
+	siska_file_t* file2 = NULL;
+#if 0
+	if (make_file(&file, "/home/my", "hello", 6) < 0) {
+		printf("%s(),%d, error\n", __func__, __LINE__);
+		return -1;
+	}
+	printf("\n");
+
+	int fd_exec = open("./execve.bin", O_RDONLY);
+	if (fd_exec < 0) {
+		printf("%s(),%d, error\n", __func__, __LINE__);
+		return -1;
+	}
+
+	char buf[256];
+	ret = read(fd_exec, buf, 256);
+	if (ret < 0) {
+		printf("%s(),%d, error\n", __func__, __LINE__);
+		return -1;
+	}
+	printf("%s(),%d, ret: %d\n", __func__, __LINE__, ret);
+
+	if (make_file(&file2, "/home/execve", buf, ret) < 0) {
+		printf("%s(),%d, error\n", __func__, __LINE__);
+		return -1;
+	}
+#else
+#if 1
+	if (make_file(&file, "/home/my", NULL, 0) < 0) {
+		printf("%s(),%d, error\n", __func__, __LINE__);
+		return -1;
+	}
+#endif
+	if (make_file(&file2, "/home/execve", NULL, 0) < 0) {
+		printf("%s(),%d, error\n", __func__, __LINE__);
+		return -1;
+	}
+#endif
+	printf("\n");
+	siska_dir_print_recursive(&siska_dir_root, &siska_dir_root);
+
+	read_file(file);
+	read_file(file2);
 #if 0
 	int fd = open("fs.bin", O_RDWR | O_CREAT | O_TRUNC, 0666);
 	if (fd > 0) {

@@ -1,6 +1,7 @@
 
 #include"siska_task.h"
 #include"siska_mm.h"
+#include"siska_vfs.h"
 #include"siska_api.h"
 
 #define SISKA_NB_TASKS  16
@@ -353,6 +354,45 @@ void siska_exit(siska_regs_t* regs)
 int siska_wait(siska_regs_t* regs)
 {
 	__siska_wait();
+	return 0;
+}
+
+int siska_execve(siska_regs_t* regs)
+{
+	if (0 == current->pid)
+		return -1;
+
+	char* filename = (char*)regs->ebx;
+
+	siska_printk("execve, filename: %s\n", filename);
+
+	siska_file_t* file = NULL;
+
+	int ret = siska_vfs_open(&file, filename,
+			SISKA_FILE_FILE | SISKA_FILE_FLAG_R | SISKA_FILE_FLAG_W,
+			0777);
+	if (ret < 0) {
+		siska_printk("open %s, ret: %d\n", filename, ret);
+		return -1;
+	}
+
+	ret = siska_vfs_read(file, (char*)0x800000, 1024);
+	if (ret < 0) {
+		siska_printk("read %s error, ret: %d\n", filename, ret);
+		return -1;
+	}
+	siska_printk("read %s, ret: %d\n", filename, ret);
+
+	current->code3 = 0x800000;
+	current->data3 = 0x800000 + ret;
+	current->heap3 = (current->data3 + PG_SIZE - 1) >> PG_SHIFT << PG_SHIFT;
+	current->brk3  = current->heap3;
+
+	current->ebp3  = 0x900000;
+	current->end3  = current->ebp3;
+
+	regs->esp = 0x900000;
+	regs->eip = 0x800000;
 	return 0;
 }
 

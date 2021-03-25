@@ -35,6 +35,8 @@ struct siska_file_s
 	unsigned int      flags;
 	unsigned int      mode;
 
+	siska_spinlock_t  lock;
+
 	unsigned char*    data;
 	long              size;
 	long              offset;

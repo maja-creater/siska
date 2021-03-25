@@ -16,3 +16,8 @@ int siska_api_printf(const char* fmt, ...)
 	return n;
 }
 
+int siska_api_execve(const char* filename, char* const argv, char* const envp)
+{
+	return siska_api_syscall(SISKA_SYSCALL_EXECVE, (unsigned long)filename, (unsigned long)argv, (unsigned long)envp);
+}
+

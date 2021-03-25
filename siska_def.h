@@ -32,6 +32,7 @@ typedef char* siska_va_list;
 #define SISKA_SYSCALL_WAIT    7
 #define SISKA_SYSCALL_GETPID  8
 #define SISKA_SYSCALL_GETPPID 9
+#define SISKA_SYSCALL_EXECVE  10
 
 #define SISKA_SIGINT          2
 #define SISKA_SIGKILL         9

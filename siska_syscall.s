@@ -3,7 +3,7 @@
 .text
 .global _timer_int_handler, _syscall_handler, _ret_from_fork, _syscall_table
 .global _jiffies, _do_timer, siska_printk
-.global _fork0_msg, _fork1_msg
+.global _fork0_msg, _fork1_msg, _execve_msg
 .global _signal_handler_entry
 
 .align 4
@@ -146,3 +146,7 @@ _fork0_msg:
 .asciz "fork0 process!\n"
 _fork1_msg:
 .asciz "fork1 process!\n"
+
+_execve_msg:
+.asciz "/home/execve"
+
